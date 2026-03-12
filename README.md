@@ -97,4 +97,9 @@ cargo build --release --bin benchmark
     --depth paired
 ```
 
-Ground-truth JSON files are generated with `scripts/ida_extract_xrefs_binary.py`.
+## Claude Code Skill
+
+This project includes a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills)
+in `.claude/skills/xrefs/` that teaches Claude how to use `xr` for binary
+reverse-engineering workflows — finding callers/callees, data references,
+pointer hunting, and more.
