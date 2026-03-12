@@ -2,8 +2,8 @@
 
 `xr` is a standalone Rust CLI tool for ultra-fast, parallel extraction of
 cross-references from stripped binaries (ELF, Mach-O, PE).  It emits
-`(from_va, to_va, kind)` tuples and targets IDA Pro ground-truth fidelity at
-orders-of-magnitude faster speed.
+`(from_va, to_va, kind)` tuples at orders-of-magnitude faster speed than
+traditional disassemblers.
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ xrefs: 206432528  |  43.3s  |  4620.3 MB scanned  |  24 segments
 
 ## Accuracy
 
-Tested against IDA Pro ground truth on 26 binaries across ELF, Mach-O, and PE
+Tested against ground-truth xrefs on 26 binaries across ELF, Mach-O, and PE
 (x86-64 and ARM64). Overall F1 ranges from **0.56–0.99** depending on binary
 complexity (lowest on MSVC C++ PE binaries with dense EH/RTTI metadata). Call
 xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
@@ -90,12 +90,11 @@ OPTIONS:
 # Build the benchmark binary
 cargo build --release --bin benchmark
 
-# Run against a ground-truth file (JSON exported from IDA)
+# Run against a ground-truth file
 ./target/release/benchmark \
     --binary /path/to/binary \
     --ground-truth /path/to/binary.xrefs.json \
     --depth paired
 ```
 
-Ground-truth JSON files are generated with `scripts/ida_extract_xrefs_binary.py`
-(requires IDA Pro with idalib).
+Ground-truth JSON files are generated with `scripts/ida_extract_xrefs_binary.py`.
