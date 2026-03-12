@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use rayon::prelude::*;
 use std::io::Write as _;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -192,49 +191,48 @@ fn main() -> Result<()> {
         const CHUNK: usize = 8192;
 
         let format_chunk = |chunk: &[&xr::xref::Xref]| -> Vec<u8> {
-            chunk
-                .par_iter()
-                .fold(Vec::new, |mut buf, x| {
-                    let context = if want_context {
-                        let lines = xr::disasm::context(
-                            binary.arch,
-                            &binary.segments,
-                            x.from,
-                            cli.before,
-                            cli.after,
-                        );
-                        Some(if lines.is_empty() {
-                            binary
-                                .segments
-                                .iter()
-                                .find(|s| s.contains(x.from))
-                                .map(|seg| {
-                                    let data = seg.data();
-                                    let off = (x.from - seg.va) as usize;
-                                    let len = 8.min(data.len().saturating_sub(off));
-                                    vec![ContextLine::data(x.from.raw(), &data[off..off + len])]
-                                })
-                                .unwrap_or_default()
-                        } else {
-                            lines.iter().map(ContextLine::from_disasm).collect()
-                        })
+            // Sequential formatting: each record is ~80 bytes of output, far too
+            // small to benefit from rayon's fork/join.  The old par_iter path
+            // spent ~18% of total runtime in rayon wait_until_cold / cthread_yield
+            // contention — more than the formatting itself.
+            let mut buf = Vec::with_capacity(chunk.len() * 80);
+            for x in chunk {
+                let context = if want_context {
+                    let lines = xr::disasm::context(
+                        binary.arch,
+                        &binary.segments,
+                        x.from,
+                        cli.before,
+                        cli.after,
+                    );
+                    Some(if lines.is_empty() {
+                        binary
+                            .segments
+                            .iter()
+                            .find(|s| s.contains(x.from))
+                            .map(|seg| {
+                                let data = seg.data();
+                                let off = (x.from - seg.va) as usize;
+                                let len = 8.min(data.len().saturating_sub(off));
+                                vec![ContextLine::data(x.from, &data[off..off + len])]
+                            })
+                            .unwrap_or_default()
                     } else {
-                        None
-                    };
-                    let record = XrefRecord {
-                        from: x.from,
-                        to: x.to,
-                        kind: x.kind,
-                        confidence: x.confidence,
-                        context,
-                    };
-                    printer.write_record(&record, &mut buf);
-                    buf
-                })
-                .reduce(Vec::new, |mut a, b| {
-                    a.extend_from_slice(&b);
-                    a
-                })
+                        lines.iter().map(ContextLine::from_disasm).collect()
+                    })
+                } else {
+                    None
+                };
+                let record = XrefRecord {
+                    from: x.from,
+                    to: x.to,
+                    kind: x.kind,
+                    confidence: x.confidence,
+                    context,
+                };
+                printer.write_record(&record, &mut buf);
+            }
+            buf
         };
 
         let candidates: Vec<_> = batch

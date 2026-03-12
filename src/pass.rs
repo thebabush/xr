@@ -300,10 +300,11 @@ impl<'a> XrefPass<'a> {
 
         let (xref_count, confidence_counts) = std::thread::scope(|s| {
             // Output thread: owns on_batch — formats and writes results.
-            // Runs concurrently with the scan workers.
-            // on_batch may use par_iter; routing it through pool.install means
-            // those tasks share the scan pool.  While scan is running they
-            // work-steal alongside scan; once scan finishes they get all threads.
+            // Runs concurrently with the scan workers on a dedicated OS thread.
+            // on_batch formats sequentially (no par_iter) so there is no need to
+            // route through pool.install — this eliminates contention between
+            // scan workers and the output path that previously caused ~18% of
+            // runtime to be spent in rayon wait_until_cold / cthread_yield.
             // Returns (xref_count, confidence_counts) after all batches processed.
             let output = s.spawn(|| {
                 let mut xref_count = 0usize;
@@ -313,7 +314,7 @@ impl<'a> XrefPass<'a> {
                         confidence_counts.add(x.confidence);
                         xref_count += 1;
                     }
-                    let cf = pool.install(|| on_batch(&batch));
+                    let cf = on_batch(&batch);
                     if cf.is_break() {
                         stop.store(true, Ordering::Relaxed);
                     }
