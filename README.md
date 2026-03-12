@@ -25,6 +25,16 @@ cargo build --release
 
 ```
 
+## Performance
+
+206 million xrefs from a 4.6 GB **dyld shared cache** (3240 images) in under 6 seconds:
+
+```
+$ xr /System/Library/dyld/dyld_shared_cache_x86_64 > /dev/null
+dyld shared cache: arch=X86_64  mappings=24  images=3240  subcaches=5
+xrefs: 206432528  |  5.7s  |  4620.3 MB scanned  |  24 segments
+```
+
 ## Example Output
 
 Default text output:
@@ -61,16 +71,6 @@ $ xr binary -k call --limit 2 -B 2 -A 1
 | `--depth scan` | ByteScan | Pointer-sized byte scan of data sections |
 | `--depth linear` | Linear | Linear disasm, immediate targets + RIP-relative |
 | `--depth paired` | Paired | ADRP+ADD/LDR pairs (ARM64) or register prop (x86-64), **recommended** |
-
-## Performance
-
-206 million xrefs from a 4.6 GB dyld shared cache (3240 images) in 43 seconds:
-
-```
-$ xr /System/Library/dyld/dyld_shared_cache_x86_64 > /dev/null
-dyld shared cache: arch=X86_64  mappings=24  images=3240  subcaches=5
-xrefs: 206432528  |  43.3s  |  4620.3 MB scanned  |  24 segments
-```
 
 ## Accuracy
 
