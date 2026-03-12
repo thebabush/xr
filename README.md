@@ -25,6 +25,35 @@ cargo build --release
 
 ```
 
+## Example Output
+
+Default text output:
+```
+$ xr binary --depth paired --limit 6
+0x00000000006a268f -> 0x00000000006a2699  jump  [linear-immediate]
+0x00000000006a26a1 -> 0x00000000006a25ea  call  [linear-immediate]
+0x00000000006a26b7 -> 0x0000000000798345  call  [linear-immediate]
+0x00000000006a26cf -> 0x00000000006a2368  data_ptr  [linear-immediate]
+0x00000000006a26d6 -> 0x00000000006a2393  call  [linear-immediate]
+0x00000000006a26f5 -> 0x000000000052d3ad  call  [linear-immediate]
+```
+
+With disassembly context (`-B 2 -A 1`):
+```
+$ xr binary -k call --limit 2 -B 2 -A 1
+0x00000000006a26a1 -> 0x00000000006a25ea  call  [linear-immediate]
+    0x00000000006a2699  4c 89 c2                  mov rdx, r8
+    0x00000000006a269c  b9 04 00 00 00            mov ecx, 4
+  > 0x00000000006a26a1  67 e8 43 ff ff ff         call 00000000006A25EAh
+    0x00000000006a26a7  48 8b 54 24 08            mov rdx, [rsp+8]
+
+0x00000000006a26d6 -> 0x00000000006a2393  call  [linear-immediate]
+    0x00000000006a26ca  48 8d 4c 24 0c            lea rcx, [rsp+0Ch]
+    0x00000000006a26cf  48 8d 15 92 fc ff ff      lea rdx, [6A2368h]
+  > 0x00000000006a26d6  e8 b8 fc ff ff            call 00000000006A2393h
+    0x00000000006a26db  48 83 c4 18               add rsp, 18h
+```
+
 ## Analysis Depths
 
 | Flag | Name | What it does |
