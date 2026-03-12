@@ -1,4 +1,4 @@
-# xr — fast binary cross-reference extractor
+# xr: fast binary cross-reference extractor
 
 `xr` is a standalone Rust CLI tool for ultra-fast, parallel extraction of
 cross-references from stripped binaries (ELF, Mach-O, PE).  It emits
@@ -30,8 +30,8 @@ cargo build --release
 | Flag | Name | What it does |
 |------|------|-------------|
 | `--depth scan` | ByteScan | Pointer-sized byte scan of data sections |
-| `--depth linear` | Linear | Linear disasm — immediate targets + RIP-relative |
-| `--depth paired` | Paired | ADRP+ADD/LDR pairs (ARM64) or register prop (x86-64) — **recommended** |
+| `--depth linear` | Linear | Linear disasm, immediate targets + RIP-relative |
+| `--depth paired` | Paired | ADRP+ADD/LDR pairs (ARM64) or register prop (x86-64), **recommended** |
 
 ## Performance
 
@@ -54,8 +54,8 @@ See [docs/STATUS.md](docs/STATUS.md) for architecture details and known gaps.
 
 ## Supported Formats
 
-- ELF (x86-64, AArch64) — including PIE (ET_DYN)
-- Single-arch Mach-O (x86-64, ARM64) — fat binaries require `lipo -extract` first
+- ELF (x86-64, AArch64), including PIE (ET_DYN)
+- Single-arch Mach-O (x86-64, ARM64). Fat binaries require `lipo -extract` first
 - PE / COFF (x86-64, ARM64)
 - Apple dyld shared cache
 - Raw flat binary (treated as single executable segment)
@@ -101,5 +101,5 @@ cargo build --release --bin benchmark
 
 This project includes a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills)
 in `.claude/skills/xrefs/` that teaches Claude how to use `xr` for binary
-reverse-engineering workflows — finding callers/callees, data references,
+reverse-engineering workflows: finding callers/callees, data references,
 pointer hunting, and more.
