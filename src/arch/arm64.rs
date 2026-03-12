@@ -982,7 +982,7 @@ mod tests {
     fn fake_seg(base_va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(base_va),
-            data: unsafe { SegData::new(data) },
+            data: unsafe { SegData::new_for_test(data) },
             executable: true,
             readable: true,
             writable: false,
@@ -996,7 +996,7 @@ mod tests {
     fn fake_data_seg(base_va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(base_va),
-            data: unsafe { SegData::new(data) },
+            data: unsafe { SegData::new_for_test(data) },
             executable: false,
             readable: true,
             writable: false,
@@ -1127,7 +1127,7 @@ mod tests {
         let code_seg = fake_seg(0x1000, &CODE);
         let segs = vec![fake_seg(0x1000, &CODE), Segment {
             va: Va::new(0x2000),
-            data: unsafe { SegData::new(&DATA) },
+            data: unsafe { SegData::new_for_test(&DATA) },
             executable: false,
             readable: true,
             writable: false,

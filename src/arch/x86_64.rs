@@ -737,7 +737,7 @@ mod tests {
     fn fake_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(va),
-            data: unsafe { SegData::new(data) },
+            data: unsafe { SegData::new_for_test(data) },
             executable: true,
             readable: true,
             writable: false,
@@ -750,7 +750,7 @@ mod tests {
     fn fake_data_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(va),
-            data: unsafe { SegData::new(data) },
+            data: unsafe { SegData::new_for_test(data) },
             executable: false,
             readable: true,
             writable: false,

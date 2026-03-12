@@ -292,7 +292,7 @@ mod tests {
     fn exec_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: crate::va::Va::new(va),
-            data: unsafe { SegData::new(data) },
+            data: unsafe { SegData::new_for_test(data) },
             executable: true,
             readable: true,
             writable: false,

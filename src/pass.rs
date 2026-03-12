@@ -547,7 +547,7 @@ mod tests {
         Segment {
             va: Va::new(va),
             // Safety: data is leaked, truly 'static.
-            data: unsafe { SegData::new(data) },
+            data: unsafe { SegData::new_for_test(data) },
             executable: true,
             readable: true,
             writable: false,
@@ -564,7 +564,7 @@ mod tests {
         Segment {
             va: Va::new(va),
             // Safety: data is leaked, truly 'static.
-            data: unsafe { SegData::new(data) },
+            data: unsafe { SegData::new_for_test(data) },
             executable: false,
             readable: true,
             writable: true,

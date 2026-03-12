@@ -81,11 +81,29 @@ impl SegData {
     /// of any [`Segment`] that holds this `SegData`.  In practice this means
     /// the backing mmap / BSS buffer must outlive the `Segment` — enforced
     /// by the field-ordering invariant of [`LoadedBinary`].
+    ///
+    /// Restricted to the `loader` module — all segment construction happens
+    /// here.  Test code should use [`new_for_test`](Self::new_for_test).
     #[inline]
-    pub(crate) unsafe fn new(data: &[u8]) -> Self {
+    pub(in crate::loader) unsafe fn new(data: &[u8]) -> Self {
         Self {
             inner: unsafe { &*(data as *const [u8]) },
         }
+    }
+
+    /// Test-only constructor with crate-wide visibility.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`new`](Self::new) — `data` must remain valid for the
+    /// lifetime of any `Segment` holding this `SegData`.  In tests this
+    /// is typically satisfied by `&'static [u8]` (static arrays or
+    /// `Box::leak`).
+    #[cfg(test)]
+    #[inline]
+    pub(crate) unsafe fn new_for_test(data: &[u8]) -> Self {
+        // Safety: forwarded from caller.
+        unsafe { Self::new(data) }
     }
 }
 
