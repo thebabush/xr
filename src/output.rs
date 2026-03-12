@@ -161,9 +161,12 @@ impl Printer for JsonlPrinter {
     fn write_record(&self, r: &XrefRecord, buf: &mut Vec<u8>) {
         // XrefRecord contains only simple types (Va, XrefKind, Confidence,
         // Option<Vec<ContextLine>>), so serialisation should never fail.
-        let s = serde_json::to_string(r)
-            .expect("XrefRecord serialisation should be infallible");
-        buf.extend_from_slice(s.as_bytes());
+        // Use `to_writer` to append directly into `buf` without an
+        // intermediate String allocation.
+        if serde_json::to_writer(buf as &mut Vec<u8>, r).is_err() {
+            // Defensive: write a placeholder so output isn't silently truncated.
+            buf.extend_from_slice(b"{\"error\":\"serialization failed\"}");
+        }
         buf.push(b'\n');
     }
 }

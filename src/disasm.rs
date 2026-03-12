@@ -192,30 +192,32 @@ fn disasm_x86(seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<
     before_context.reverse();
 
     // ── Step 3: combine before + focus + after ────────────────────────────────
-    let focus_line = &anchor_insns[0];
-    let after_lines = &anchor_insns[1..anchor_insns.len().min(after + 1)];
-
+    let after_count = anchor_insns.len().min(after + 1);
     let mut result: Vec<DisasmLine> =
-        Vec::with_capacity(before_context.len() + 1 + after_lines.len());
-    for d in &before_context {
+        Vec::with_capacity(before_context.len() + after_count);
+    for d in before_context {
         result.push(DisasmLine {
             va: d.va,
-            bytes: d.bytes.clone(),
-            text: d.text.clone(),
+            bytes: d.bytes,
+            text: d.text,
             is_focus: false,
         });
     }
-    result.push(DisasmLine {
-        va: focus_line.va,
-        bytes: focus_line.bytes.clone(),
-        text: focus_line.text.clone(),
-        is_focus: true,
-    });
-    for d in after_lines {
+    // Drain anchor_insns: first element is focus, remainder is after-context.
+    let mut anchor_iter = anchor_insns.into_iter().take(after_count);
+    if let Some(focus) = anchor_iter.next() {
+        result.push(DisasmLine {
+            va: focus.va,
+            bytes: focus.bytes,
+            text: focus.text,
+            is_focus: true,
+        });
+    }
+    for d in anchor_iter {
         result.push(DisasmLine {
             va: d.va,
-            bytes: d.bytes.clone(),
-            text: d.text.clone(),
+            bytes: d.bytes,
+            text: d.text,
             is_focus: false,
         });
     }
@@ -268,13 +270,14 @@ fn build_window(
     let start = focus_idx.saturating_sub(before);
     let end = (focus_idx + after + 1).min(all.len());
 
-    all[start..end]
-        .iter()
+    all.into_iter()
+        .skip(start)
+        .take(end - start)
         .map(|d| DisasmLine {
-            va: d.va,
-            bytes: d.bytes.clone(),
-            text: d.text.clone(),
             is_focus: d.va == focus_va,
+            va: d.va,
+            bytes: d.bytes,
+            text: d.text,
         })
         .collect()
 }

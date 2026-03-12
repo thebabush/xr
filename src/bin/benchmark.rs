@@ -79,8 +79,8 @@ struct Cli {
     /// Minimum target VA for emitted xrefs. Xrefs whose 'to' is below this
     /// are silently dropped. Default: auto-detect from binary (binary.min_va()).
     /// Set to 0 to disable filtering.
-    #[arg(long)]
-    min_ref_va: Option<u64>,
+    #[arg(long, value_parser = Va::parse)]
+    min_ref_va: Option<Va>,
 }
 
 // ── Ground-truth types ────────────────────────────────────────────────────────
@@ -385,7 +385,6 @@ fn main() -> Result<()> {
 
     let min_ref_va = Some(cli
         .min_ref_va
-        .map(Va::new)
         .unwrap_or_else(|| binary.min_va()));
     println!(
         "binary       : {}  arch={:?}  segments={}",

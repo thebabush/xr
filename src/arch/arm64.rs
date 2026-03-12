@@ -14,7 +14,7 @@
 //! Thumb / ARM32: not implemented here — stub returns empty. Will be a separate
 //! pass in arm32.rs when needed.
 
-use super::{ScanRegion, SegmentDataIndex, SegmentIndex, XrefSet};
+use super::{ScanRegion, SegmentDataIndex, SegmentIndex};
 use crate::arch::arm64_decode::Arm64Insn;
 use crate::va::Va;
 use crate::xref::{Confidence, Xref, XrefKind};
@@ -193,7 +193,7 @@ impl ScanState {
 pub(crate) fn scan_linear(
     region: &ScanRegion,
     idx: &SegmentIndex,
-) -> XrefSet {
+) -> Vec<Xref> {
     let mut xrefs = Vec::new();
     let data = region.data;
     let base = region.base_va;
@@ -227,7 +227,7 @@ pub(crate) fn scan_adrp(
     region: &ScanRegion,
     idx: &SegmentIndex,
     data_idx: &SegmentDataIndex,
-) -> XrefSet {
+) -> Vec<Xref> {
     let mut xrefs = Vec::new();
     let data = region.data;
     let base = region.base_va;

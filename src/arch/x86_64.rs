@@ -10,7 +10,7 @@
 //! values and resolve indirect CALL/JMP where the target is a known constant.
 //! This catches `mov rax, imm64; call rax` patterns.
 
-use super::{ScanRegion, SegmentDataIndex, SegmentIndex, XrefSet};
+use super::{ScanRegion, SegmentDataIndex, SegmentIndex};
 use crate::va::Va;
 use crate::xref::{Confidence, Xref, XrefKind};
 use iced_x86::{
@@ -66,7 +66,7 @@ pub(crate) fn scan_linear(
     idx: &SegmentIndex,
     got_slots: &FxHashSet<Va>,
     data_idx: &SegmentDataIndex,
-) -> XrefSet {
+) -> Vec<Xref> {
     scan_core(region, idx, got_slots, data_idx, PropMode::Off)
 }
 
@@ -77,7 +77,7 @@ pub(crate) fn scan_with_prop(
     idx: &SegmentIndex,
     got_slots: &FxHashSet<Va>,
     data_idx: &SegmentDataIndex,
-) -> XrefSet {
+) -> Vec<Xref> {
     scan_core(region, idx, got_slots, data_idx, PropMode::On)
 }
 
@@ -88,7 +88,7 @@ fn scan_core(
     got_slots: &FxHashSet<Va>,
     data_idx: &SegmentDataIndex,
     prop: PropMode,
-) -> XrefSet {
+) -> Vec<Xref> {
     let mut xrefs = Vec::new();
     let data = region.data;
     let base = region.base_va.raw();
@@ -644,28 +644,87 @@ fn update_prop_state(insn: &Instruction, vals: &mut [Option<u64>; 16]) {
     }
 }
 
-/// Map a GPR (in any width) to an index 0..15.
-/// Returns None for non-GPR registers (XMM, segment, etc.).
-fn gpr_index(reg: Register) -> Option<usize> {
-    match reg {
-        Register::RAX | Register::EAX | Register::AX | Register::AL | Register::AH => Some(0),
-        Register::RCX | Register::ECX | Register::CX | Register::CL | Register::CH => Some(1),
-        Register::RDX | Register::EDX | Register::DX | Register::DL | Register::DH => Some(2),
-        Register::RBX | Register::EBX | Register::BX | Register::BL | Register::BH => Some(3),
-        Register::RSP | Register::ESP | Register::SP | Register::SPL => Some(4),
-        Register::RBP | Register::EBP | Register::BP | Register::BPL => Some(5),
-        Register::RSI | Register::ESI | Register::SI | Register::SIL => Some(6),
-        Register::RDI | Register::EDI | Register::DI | Register::DIL => Some(7),
-        Register::R8 | Register::R8D | Register::R8W | Register::R8L => Some(8),
-        Register::R9 | Register::R9D | Register::R9W | Register::R9L => Some(9),
-        Register::R10 | Register::R10D | Register::R10W | Register::R10L => Some(10),
-        Register::R11 | Register::R11D | Register::R11W | Register::R11L => Some(11),
-        Register::R12 | Register::R12D | Register::R12W | Register::R12L => Some(12),
-        Register::R13 | Register::R13D | Register::R13W | Register::R13L => Some(13),
-        Register::R14 | Register::R14D | Register::R14W | Register::R14L => Some(14),
-        Register::R15 | Register::R15D | Register::R15W | Register::R15L => Some(15),
-        _ => None,
+// ── GPR index newtype ─────────────────────────────────────────────────────────
+
+/// An x86-64 general-purpose register index in 0..=15 (RAX–R15).
+///
+/// Wraps a `u8` so that array accesses through `GprIdx` are always in bounds
+/// for the 16-element register tracking arrays.  Using `GprIdx` instead of
+/// bare `usize` eliminates scattered raw-index arithmetic at every use site.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct GprIdx(u8);
+
+impl GprIdx {
+    /// Index into a 16-element register array.
+    #[inline]
+    fn idx(self) -> usize {
+        self.0 as usize
     }
+}
+
+impl std::ops::Index<GprIdx> for [Option<u64>; 16] {
+    type Output = Option<u64>;
+    #[inline]
+    fn index(&self, i: GprIdx) -> &Self::Output {
+        &self[i.idx()]
+    }
+}
+impl std::ops::IndexMut<GprIdx> for [Option<u64>; 16] {
+    #[inline]
+    fn index_mut(&mut self, i: GprIdx) -> &mut Self::Output {
+        &mut self[i.idx()]
+    }
+}
+impl std::ops::Index<GprIdx> for [Option<JumpTableInfo>; 16] {
+    type Output = Option<JumpTableInfo>;
+    #[inline]
+    fn index(&self, i: GprIdx) -> &Self::Output {
+        &self[i.idx()]
+    }
+}
+impl std::ops::IndexMut<GprIdx> for [Option<JumpTableInfo>; 16] {
+    #[inline]
+    fn index_mut(&mut self, i: GprIdx) -> &mut Self::Output {
+        &mut self[i.idx()]
+    }
+}
+impl std::ops::Index<GprIdx> for [Option<u32>; 16] {
+    type Output = Option<u32>;
+    #[inline]
+    fn index(&self, i: GprIdx) -> &Self::Output {
+        &self[i.idx()]
+    }
+}
+impl std::ops::IndexMut<GprIdx> for [Option<u32>; 16] {
+    #[inline]
+    fn index_mut(&mut self, i: GprIdx) -> &mut Self::Output {
+        &mut self[i.idx()]
+    }
+}
+
+/// Map a GPR (in any width) to a `GprIdx`.
+/// Returns `None` for non-GPR registers (XMM, segment, etc.).
+fn gpr_index(reg: Register) -> Option<GprIdx> {
+    let i = match reg {
+        Register::RAX | Register::EAX | Register::AX | Register::AL | Register::AH => 0,
+        Register::RCX | Register::ECX | Register::CX | Register::CL | Register::CH => 1,
+        Register::RDX | Register::EDX | Register::DX | Register::DL | Register::DH => 2,
+        Register::RBX | Register::EBX | Register::BX | Register::BL | Register::BH => 3,
+        Register::RSP | Register::ESP | Register::SP | Register::SPL => 4,
+        Register::RBP | Register::EBP | Register::BP | Register::BPL => 5,
+        Register::RSI | Register::ESI | Register::SI | Register::SIL => 6,
+        Register::RDI | Register::EDI | Register::DI | Register::DIL => 7,
+        Register::R8 | Register::R8D | Register::R8W | Register::R8L => 8,
+        Register::R9 | Register::R9D | Register::R9W | Register::R9L => 9,
+        Register::R10 | Register::R10D | Register::R10W | Register::R10L => 10,
+        Register::R11 | Register::R11D | Register::R11W | Register::R11L => 11,
+        Register::R12 | Register::R12D | Register::R12W | Register::R12L => 12,
+        Register::R13 | Register::R13D | Register::R13W | Register::R13L => 13,
+        Register::R14 | Register::R14D | Register::R14W | Register::R14L => 14,
+        Register::R15 | Register::R15D | Register::R15W | Register::R15L => 15,
+        _ => return None,
+    };
+    Some(GprIdx(i))
 }
 
 #[cfg(test)]

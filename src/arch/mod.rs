@@ -47,9 +47,7 @@ impl<'a> ScanRegion<'a> {
     }
 }
 
-/// A set of candidate xrefs produced by a single scan pass.
-/// May contain duplicates (from shard overlap) — caller deduplicates.
-pub(crate) type XrefSet = Vec<Xref>;
+
 
 // ── Segment flags ─────────────────────────────────────────────────────────────
 
@@ -124,7 +122,8 @@ impl SegmentIndex {
             .map(|s| (s.va, s.va + s.data.len() as u64, segment_flags(s)))
             .collect();
         entries.sort_unstable_by_key(|e| e.0);
-        check_disjoint("SegmentIndex", &entries, |e| (e.0, e.1));
+        // Overlap check is done once in SegmentDataIndex::build (built from
+        // the same segments), no need to duplicate the warning here.
         Self { entries }
     }
 
@@ -285,7 +284,7 @@ pub(crate) fn byte_scan_pointers(
     region: &ScanRegion,
     data_idx: &SegmentDataIndex,
     pointer_size: usize,
-) -> XrefSet {
+) -> Vec<Xref> {
     let mut xrefs = Vec::new();
     let data = region.data;
     let step = pointer_size;

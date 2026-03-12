@@ -246,6 +246,18 @@ fn build_macho_fixup_pointers(
 
     let seg_set = VaRangeSet::build(segments);
 
+    // Build a map from segment index → segment vmaddr so we can convert
+    // chain offsets (which are file offsets within a segment) to VAs.
+    // The chained fixups header lists segments by index matching the Mach-O
+    // LC_SEGMENT_64 order.  `segment_offset` in each starts-in-segment
+    // record is the segment's file offset, so:
+    //   slot_va = seg_vmaddr + (chain_off - segment_offset)
+    let seg_vmaddrs: Vec<u64> = macho
+        .segments
+        .iter()
+        .map(|s| s.vmaddr)
+        .collect();
+
     let Some(lc) = macho.load_commands.iter().find_map(|lc| {
         if let CommandVariant::DyldChainedFixups(ref cmd) = lc.command {
             Some(cmd)
@@ -311,6 +323,11 @@ fn build_macho_fixup_pointers(
             None => continue,
         };
 
+        // Resolve this segment's vmaddr for file-offset → VA conversion.
+        // `segment_offset` is a file offset; `seg_vmaddr` is where the
+        // segment is mapped.  slot_va = seg_vmaddr + (chain_off - segment_offset).
+        let seg_vmaddr = seg_vmaddrs.get(seg_idx).copied().unwrap_or(0);
+
         for p_idx in 0..page_count {
             let ps_off = ss_off + 22 + p_idx * 2;
             if ps_off + 2 > bytes.len() {
@@ -338,7 +355,11 @@ fn build_macho_fixup_pointers(
                 );
 
                 if let Some(target_va) = fmt.decode_rebase(val, preferred_base) {
-                    let slot_va = Va::new(preferred_base + chain_off as u64);
+                    // Convert file offset to VA:
+                    // chain_off is a file offset within this segment;
+                    // segment_offset is the segment's file offset.
+                    let offset_in_seg = chain_off as u64 - segment_offset;
+                    let slot_va = Va::new(seg_vmaddr + offset_in_seg);
                     if seg_set.contains(target_va) {
                         result.push(RelocPointer { from: slot_va, to: target_va });
                     }
