@@ -19,7 +19,7 @@ AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
 | ELF ARM64 | 0.84–0.95 | Lower end from unresolved ADRP pairs and jump tables |
 | Mach-O ARM64 | 0.98 | Fixup chain parsing recovers most data_ptr |
 | PE x86-64 (Rust/MinGW) | 0.89–0.99 | .pdata + UNWIND_INFO parsing very effective |
-| PE x86-64 (MSVC C++) | 0.70–0.87 | Limited by 32-bit RVA EH/RTTI metadata |
+| PE x86-64 (MSVC C++) | 0.56–0.87 | Limited by 32-bit RVA EH/RTTI metadata; low end from .pdata FPs on concrt140.dll |
 | PE ARM64 | 0.62–0.75 | Limited by data_ptr gaps |
 
 Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
