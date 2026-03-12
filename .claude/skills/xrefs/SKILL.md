@@ -7,6 +7,8 @@ description: Find cross-references (callers, callees, data references) in native
 
 `xr` is a fast, multi-threaded cross-reference scanner for native binaries. It extracts caller→callee edges and data references directly from machine code — no debug info or symbols required.
 
+Install with `cargo install --path .` from the repo root, or run directly via `cargo run --release --`.
+
 **Reach for `xr` instead of `objdump | grep` when you need to:**
 - Find all callers of a function at a known address
 - Find all references to a data symbol or GOT entry
@@ -32,10 +34,11 @@ x86-32 and ARM32 are parsed and loaded but not yet scanned.
 ```
 xr [OPTIONS] <BINARY>
 
-  -f text|json|csv        Output format (default: text)
+  -f text|jsonl|csv       Output format (default: text)
   -k call|jump|data_read|data_write|data_ptr
                           Filter to one xref kind
-  -d scan|linear|paired   Analysis depth (default: paired)
+  -d byte-scan|linear|paired
+                          Analysis depth (default: paired)
   -B N / -A N             Show N disasm lines before/after each xref site
   --ref-start VA          Keep only xrefs whose target >= VA
   --ref-end   VA          Keep only xrefs whose target <  VA
@@ -94,8 +97,8 @@ xr binary --ref-start 0x408000 --ref-end 0x408008
 # Like grep -B3 -A3 but for machine code
 xr binary --ref-start 0x401234 --ref-end 0x401235 -k call -B 3 -A 3
 
-# JSON with embedded context for scripting
-xr binary --ref-start 0x401234 --ref-end 0x401235 -k call -B 2 -A 2 -f json
+# JSONL with embedded context for scripting
+xr binary --ref-start 0x401234 --ref-end 0x401235 -k call -B 2 -A 2 -f jsonl
 ```
 
 ### 5. Scan only one function's range (avoid full-binary cost)
@@ -127,13 +130,21 @@ xr /System/Library/dyld/dyld_shared_cache_arm64e \
   --ref-start 0x1a3b00000 --ref-end 0x1a3b00010 -k call -B 2
 ```
 
-### 9. Quick call graph (JSON + jq)
+### 9. Quick call graph (JSONL + jq)
 
 ```bash
-xr binary -k call -f json \
-  | jq -r '.[] | "\(.from) -> \(.to)"' \
+xr binary -k call -f jsonl \
+  | jq -r '"\(.from) -> \(.to)"' \
   | sort -u | head -50
 ```
+
+Note: `from` and `to` in JSONL output are decimal integers. To get hex:
+```bash
+xr binary -k call -f jsonl \
+  | jq -r '"0x" + (.from | tostring | ltrimstr("0x")) + " -> 0x" + (.to | tostring | ltrimstr("0x"))'
+```
+
+Or use text format for human-readable hex output.
 
 ## Output formats
 
@@ -143,7 +154,10 @@ xr binary -k call -f json \
 ```
 With `-B`/`-A`, indented disasm lines follow each xref entry.
 
-**json**: array of objects with `from`, `to`, `kind`, `confidence` fields.
+**jsonl** (JSON Lines — one JSON object per line):
+```
+{"from":4198964,"to":4206592,"kind":"call","confidence":"linear-immediate"}
+```
 With `-B`/`-A`, each object gains a `"context"` array of `{va, hex, text, focus}`.
 
 **csv**: `from,to,kind,confidence` per line — no context even with `-B`/`-A`.
@@ -152,7 +166,7 @@ With `-B`/`-A`, each object gains a `"context"` array of `{va, hex, text, focus}
 
 | Value | Finds | Speed |
 |-------|-------|-------|
-| `scan` | Pointer-sized values in data sections | Fastest, most false positives |
+| `byte-scan` | Pointer-sized values in data sections | Fastest, most false positives |
 | `linear` | Direct branches + RIP-relative / ADRP memory refs | Fast, ~85% recall |
 | `paired` (default) | All of linear + ADRP pairs (ARM64) + register const-prop (x86-64) | Best quality |
 
