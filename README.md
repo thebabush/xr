@@ -74,11 +74,6 @@ xrefs: 206432528  |  43.3s  |  4620.3 MB scanned  |  24 segments
 
 ## Accuracy
 
-Tested against ground-truth xrefs on 26 binaries across ELF, Mach-O, and PE
-(x86-64 and ARM64). Overall F1 ranges from **0.56–0.99** depending on binary
-complexity (lowest on MSVC C++ PE binaries with dense EH/RTTI metadata). Call
-xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
-
 See [docs/STATUS.md](docs/STATUS.md) for architecture details and known gaps.
 
 ## Supported Formats
