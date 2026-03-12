@@ -1,4 +1,4 @@
-# xr: fast binary cross-reference extractor
+# xr - fast binary cross-reference extractor
 
 `xr` is a standalone Rust CLI tool for ultra-fast, parallel extraction of
 cross-references from stripped binaries (ELF, Mach-O, PE).  It emits
