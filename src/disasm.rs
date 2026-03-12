@@ -287,12 +287,12 @@ fn build_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loader::{DecodeMode, Segment};
+    use crate::loader::{DecodeMode, SegData, Segment};
 
     fn exec_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: crate::va::Va::new(va),
-            data,
+            data: unsafe { SegData::new(data) },
             executable: true,
             readable: true,
             writable: false,

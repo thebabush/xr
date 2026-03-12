@@ -515,7 +515,7 @@ fn scan_shard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loader::{Arch, DecodeMode, Segment};
+    use crate::loader::{Arch, DecodeMode, SegData, Segment};
     use crate::xref::XrefKind;
     use ahash::AHashSet;
 
@@ -546,7 +546,8 @@ mod tests {
         let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         Segment {
             va: Va::new(va),
-            data,
+            // Safety: data is leaked, truly 'static.
+            data: unsafe { SegData::new(data) },
             executable: true,
             readable: true,
             writable: false,
@@ -562,7 +563,8 @@ mod tests {
         let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         Segment {
             va: Va::new(va),
-            data,
+            // Safety: data is leaked, truly 'static.
+            data: unsafe { SegData::new(data) },
             executable: false,
             readable: true,
             writable: true,

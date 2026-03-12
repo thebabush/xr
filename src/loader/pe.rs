@@ -1,11 +1,15 @@
-use super::{alloc_bss, ParseResult, Segment, Symbol, VaRangeSet};
+use super::{alloc_bss, ParseResult, SegData, Segment, Symbol, VaRangeSet};
 use crate::loader::{Arch, DecodeMode, RelocPointer};
 use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
 
+/// # Safety (internal)
+///
+/// `bytes` must remain valid for the lifetime of any `Segment` in the result.
+/// Guaranteed by `LoadedBinary` field-ordering invariant.
 pub(super) fn parse_pe(
-    bytes: &'static [u8],
+    bytes: &[u8],
     pe: &goblin::pe::PE,
     bss_bufs: &mut Vec<Box<[u8]>>,
 ) -> Result<ParseResult> {
@@ -40,9 +44,10 @@ pub(super) fn parse_pe(
         let is_debug = name.starts_with(".debug_");
         if is_debug {
             if raw_size > 0 && raw_offset + raw_size <= bytes.len() {
+                // Safety: `bytes` is the mmap kept alive by LoadedBinary.
                 segments.push(Segment {
                     va,
-                    data: &bytes[raw_offset..raw_offset + raw_size],
+                    data: unsafe { SegData::new(&bytes[raw_offset..raw_offset + raw_size]) },
                     executable: exec,
                     readable: read,
                     writable: write,
@@ -58,7 +63,7 @@ pub(super) fn parse_pe(
             if virt_size == 0 {
                 continue;
             }
-            let bss_data: &'static [u8] = alloc_bss(virt_size, bss_bufs);
+            let bss_data = alloc_bss(virt_size, bss_bufs);
             segments.push(Segment {
                 va,
                 data: bss_data,
@@ -84,7 +89,7 @@ pub(super) fn parse_pe(
         if virt_size > raw_size {
             let bss_va = va + raw_size as u64;
             let bss_sz = virt_size - raw_size;
-            let bss_data: &'static [u8] = alloc_bss(bss_sz, bss_bufs);
+            let bss_data = alloc_bss(bss_sz, bss_bufs);
             segments.push(Segment {
                 va: bss_va,
                 data: bss_data,
@@ -97,9 +102,10 @@ pub(super) fn parse_pe(
             });
         }
 
+        // Safety: `bytes` is the mmap kept alive by LoadedBinary.
         segments.push(Segment {
             va,
-            data,
+            data: unsafe { SegData::new(data) },
             executable: exec,
             readable: read,
             writable: write,

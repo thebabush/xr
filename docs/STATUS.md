@@ -32,7 +32,7 @@ Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
 
 - **Languages**: Rust (core), Python (analysis scripts)
 - **Parallelism**: Custom Rayon thread pool (`n_workers` threads); shard-per-segment dispatch
-- **Zero-copy**: `memmap2` mmap, `&'static [u8]` segment slices
+- **Zero-copy**: `memmap2` mmap, `SegData` newtype segment slices (hides `&'static` lifetime)
 - **Depth levels**:
   - `ByteScan` (0): pointer-aligned 8-byte scan of data segments
   - `Linear` (1): sequential instruction decode of exec segments

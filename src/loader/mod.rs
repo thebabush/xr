@@ -54,20 +54,67 @@ pub enum DecodeMode {
     Arm32,
 }
 
+/// Segment byte data with externally managed lifetime.
+///
+/// Internally stores a `&'static [u8]` whose true lifetime is tied to the
+/// backing store (mmap / BSS buffer / dyld context) in [`LoadedBinary`].
+/// The `'static` is hidden by this newtype so it cannot leak through safe
+/// code.
+///
+/// [`Deref<Target = [u8]>`] provides zero-cost transparent access to all
+/// slice methods.  The resulting `&[u8]` lifetime is tied to `&self`, not
+/// `'static`, so callers cannot hold references beyond the segment's
+/// lifetime.
+pub struct SegData {
+    /// The `'static` lifetime here is a lie — see type-level docs.
+    /// This field is private so only code in this module can observe
+    /// the `'static` lifetime.
+    inner: &'static [u8],
+}
+
+impl SegData {
+    /// Create a `SegData` wrapping the given byte slice.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `data` remains valid for the lifetime
+    /// of any [`Segment`] that holds this `SegData`.  In practice this means
+    /// the backing mmap / BSS buffer must outlive the `Segment` — enforced
+    /// by the field-ordering invariant of [`LoadedBinary`].
+    #[inline]
+    pub(crate) unsafe fn new(data: &[u8]) -> Self {
+        Self {
+            inner: unsafe { &*(data as *const [u8]) },
+        }
+    }
+}
+
+impl std::ops::Deref for SegData {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        self.inner
+    }
+}
+
+impl std::fmt::Debug for SegData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{} bytes]", self.inner.len())
+    }
+}
+
 /// A single mapped segment of the binary — executable or data.
 /// Backed by a byte slice into the mmap'd file. Zero copy.
 #[derive(Debug)]
 pub struct Segment {
     /// Virtual address of the segment start.
     pub va: Va,
-    /// Raw bytes — a slice into the mmap (zero-copy).
+    /// Raw bytes — a [`SegData`] wrapping a slice into the mmap (zero-copy).
     ///
-    /// `pub(crate)` instead of `pub`: the `&'static` lifetime is a lie — the
-    /// backing allocation (mmap / `_bss_bufs`) lives only as long as
-    /// `LoadedBinary`. The public [`data()`](Segment::data) accessor returns
-    /// `&[u8]` tied to `&self`, preventing callers from holding the slice
-    /// beyond the segment's lifetime.
-    pub(crate) data: &'static [u8],
+    /// Access via [`Deref`]: `seg.data.len()`, `&seg.data[range]`, etc.
+    /// The resulting `&[u8]` lifetime is tied to `&seg`, not `'static`.
+    pub(crate) data: SegData,
     /// Whether this segment contains executable code.
     pub executable: bool,
     /// Whether this segment contains readable data.
@@ -88,10 +135,10 @@ pub struct Segment {
 impl Segment {
     /// Raw byte data backing this segment.
     ///
-    /// The returned reference is tied to `&self` rather than being `'static`,
-    /// so callers cannot outlive the owning [`LoadedBinary`].
+    /// The returned reference is tied to `&self`, so callers cannot outlive
+    /// the owning [`LoadedBinary`].
     pub fn data(&self) -> &[u8] {
-        self.data
+        &self.data
     }
 
     /// Byte slice at a given virtual address range, if within this segment.
@@ -212,10 +259,7 @@ impl LoadedBinary {
             });
         }
 
-        // Safety: `_mmap` is stored in the returned struct and never dropped
-        // before the segments — the Vec<Segment> is dropped first.
-        let bytes: &'static [u8] =
-            unsafe { std::slice::from_raw_parts(mmap.as_ptr(), mmap.len()) };
+        let bytes: &[u8] = &mmap[..];
 
         let mut bss_bufs: Vec<Box<[u8]>> = Vec::new();
         let p = parse_binary(bytes, &mut bss_bufs, base)?;
@@ -315,19 +359,21 @@ struct ParseResult {
 }
 
 /// Allocate a zero-filled buffer of `size` bytes, store it in `bufs` for
-/// lifetime management, and return a `&'static [u8]` into it.
+/// lifetime management, and return a [`SegData`] wrapping it.
 ///
-/// Safety: the returned slice is valid as long as the owning `bufs` Vec
-/// (and thus `LoadedBinary::_bss_bufs`) is alive — same drop-order guarantee
-/// as `LoadedBinary::_mmap` for the mmap-backed slices.
-fn alloc_bss(size: usize, bufs: &mut Vec<Box<[u8]>>) -> &'static [u8] {
+/// # Safety (internal)
+///
+/// The returned `SegData` is valid as long as the owning `bufs` Vec (and
+/// thus `LoadedBinary::_bss_bufs`) is alive — same drop-order guarantee as
+/// `LoadedBinary::_mmap` for the mmap-backed slices.
+fn alloc_bss(size: usize, bufs: &mut Vec<Box<[u8]>>) -> SegData {
     let buf: Box<[u8]> = vec![0u8; size].into_boxed_slice();
     let ptr = buf.as_ptr();
     bufs.push(buf);
     // Safety: ptr points into the Box we just pushed, which lives in `bufs`
     // (ultimately in `LoadedBinary::_bss_bufs`). The struct drops `_bss_bufs`
-    // after `segments`, so the slice outlives all Segment references.
-    unsafe { std::slice::from_raw_parts(ptr, size) }
+    // after `segments`, so the SegData outlives all Segment references.
+    unsafe { SegData::new(std::slice::from_raw_parts(ptr, size)) }
 }
 
 /// Sorted VA range set for O(log n) containment checks.
@@ -359,8 +405,14 @@ impl VaRangeSet {
 
 // ── Format dispatch ───────────────────────────────────────────────────────────
 
+/// # Safety (internal)
+///
+/// `bytes` must remain valid for the lifetime of any `Segment` in the
+/// returned `ParseResult`.  This is guaranteed by the caller
+/// (`load_with_base`) which stores the mmap in `LoadedBinary::_mmap` and
+/// drops it after `segments`.
 fn parse_binary(
-    bytes: &'static [u8],
+    bytes: &[u8],
     bss_bufs: &mut Vec<Box<[u8]>>,
     base: Option<u64>,
 ) -> Result<ParseResult> {
@@ -374,9 +426,10 @@ fn parse_binary(
         }
         Object::PE(ref pe_obj) => pe::parse_pe(bytes, pe_obj, bss_bufs),
         Object::Unknown(_) => {
+            // Safety: `bytes` is the mmap kept alive by `LoadedBinary::_mmap`.
             let seg = Segment {
                 va: Va::ZERO,
-                data: bytes,
+                data: unsafe { SegData::new(bytes) },
                 executable: true,
                 readable: true,
                 writable: false,

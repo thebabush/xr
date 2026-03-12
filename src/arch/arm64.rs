@@ -975,14 +975,14 @@ fn immediate_xref(insn: Arm64Insn, va: Va, idx: &SegmentIndex) -> Option<Xref> {
 mod tests {
     use super::*;
     use crate::arch::{ScanRegion, SegmentDataIndex};
-    use crate::loader::{DecodeMode, Segment};
+    use crate::loader::{DecodeMode, SegData, Segment};
     use crate::xref::{Confidence, XrefKind};
 
     /// Build a fake executable segment covering exactly the given bytes at `base_va`.
     fn fake_seg(base_va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(base_va),
-            data,
+            data: unsafe { SegData::new(data) },
             executable: true,
             readable: true,
             writable: false,
@@ -996,7 +996,7 @@ mod tests {
     fn fake_data_seg(base_va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(base_va),
-            data,
+            data: unsafe { SegData::new(data) },
             executable: false,
             readable: true,
             writable: false,
@@ -1127,7 +1127,7 @@ mod tests {
         let code_seg = fake_seg(0x1000, &CODE);
         let segs = vec![fake_seg(0x1000, &CODE), Segment {
             va: Va::new(0x2000),
-            data: &DATA,
+            data: unsafe { SegData::new(&DATA) },
             executable: false,
             readable: true,
             writable: false,

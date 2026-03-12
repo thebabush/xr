@@ -1,11 +1,15 @@
-use super::{alloc_bss, ParseResult, Segment, Symbol, VaRangeSet};
+use super::{alloc_bss, ParseResult, SegData, Segment, Symbol, VaRangeSet};
 use crate::loader::{Arch, DecodeMode, RelocPointer};
 use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
 
+/// # Safety (internal)
+///
+/// `bytes` must remain valid for the lifetime of any `Segment` in the result.
+/// Guaranteed by `LoadedBinary` field-ordering invariant.
 pub(super) fn parse_macho(
-    bytes: &'static [u8],
+    bytes: &[u8],
     macho: &goblin::mach::MachO,
     bss_bufs: &mut Vec<Box<[u8]>>,
 ) -> Result<ParseResult> {
@@ -47,14 +51,15 @@ pub(super) fn parse_macho(
             let full_name = format!("{seg_name},{sect_name}");
             let byte_scannable = !exec && !NO_SCAN_SECTIONS.iter().any(|&n| n == full_name);
 
-            let section_data: &'static [u8] = if data.is_empty() {
+            let section_data = if data.is_empty() {
                 alloc_bss(size, bss_bufs)
             } else {
                 let file_offset = sect.offset as usize;
                 if file_offset + size > bytes.len() {
                     continue;
                 }
-                &bytes[file_offset..file_offset + size]
+                // Safety: `bytes` is the mmap kept alive by LoadedBinary.
+                unsafe { SegData::new(&bytes[file_offset..file_offset + size]) }
             };
 
             segments.push(Segment {

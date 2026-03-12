@@ -1,4 +1,4 @@
-use super::{ParseResult, Segment};
+use super::{ParseResult, SegData, Segment};
 use crate::loader::{Arch, DecodeMode};
 use crate::va::Va;
 use anyhow::{anyhow, Result};
@@ -45,8 +45,8 @@ pub(super) fn parse_dyld_cache(path: &Path) -> Result<DyldParseResult> {
         // Safety: ctx is moved into LoadedBinary::_dyld_ctx and lives at least
         // as long as the segments Vec — field declaration order guarantees
         // _dyld_ctx is dropped after segments.
-        let data: &'static [u8] = match ctx.data_at_addr(mapping.address, mapping.size as usize) {
-            Ok(slice) => unsafe { std::slice::from_raw_parts(slice.as_ptr(), slice.len()) },
+        let data = match ctx.data_at_addr(mapping.address, mapping.size as usize) {
+            Ok(slice) => unsafe { SegData::new(slice) },
             Err(e) => {
                 eprintln!(
                     "warning: skipping mapping {:#x}+{:#x}: {e}",

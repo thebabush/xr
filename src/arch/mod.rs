@@ -192,7 +192,7 @@ impl<'a> SegmentDataIndex<'a> {
                 start: s.va,
                 end: s.va + s.data.len() as u64,
                 flags: segment_flags(s),
-                data: s.data,
+                data: &s.data,
             })
             .collect();
         entries.sort_unstable_by_key(|e| e.start);

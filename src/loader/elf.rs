@@ -1,4 +1,4 @@
-use super::{alloc_bss, ParseResult, Segment, Symbol, VaRangeSet};
+use super::{alloc_bss, ParseResult, SegData, Segment, Symbol, VaRangeSet};
 use crate::loader::{Arch, DecodeMode, RelocPointer};
 use crate::va::Va;
 use anyhow::Result;
@@ -8,8 +8,12 @@ use rustc_hash::FxHashSet;
 /// Matches the traditional Linux x86-64 / AArch64 PIE base and IDA default.
 const DEFAULT_PIE_BASE: u64 = 0x0040_0000;
 
+/// # Safety (internal)
+///
+/// `bytes` must remain valid for the lifetime of any `Segment` in the result.
+/// Guaranteed by `LoadedBinary` field-ordering invariant.
 pub(super) fn parse_elf(
-    bytes: &'static [u8],
+    bytes: &[u8],
     elf: &goblin::elf::Elf,
     bss_bufs: &mut Vec<Box<[u8]>>,
     base_override: Option<u64>,
@@ -129,9 +133,10 @@ pub(super) fn parse_elf(
                         continue;
                     }
                     let data = &bytes[sec.file_offset..sec.file_offset + sec.file_size];
+                    // Safety: `bytes` is the mmap kept alive by LoadedBinary.
                     segments.push(Segment {
                         va: Va::new(sec.va),
-                        data,
+                        data: unsafe { SegData::new(data) },
                         executable: sec.is_code,
                         readable: read,
                         writable: write,
@@ -143,7 +148,7 @@ pub(super) fn parse_elf(
                 let last_end = secs.iter().map(|s| s.end).max().unwrap_or(ph_va_end);
                 if last_end < ph_va_end {
                     let bss_sz = (ph_va_end - last_end) as usize;
-                    let bss_data: &'static [u8] = alloc_bss(bss_sz, bss_bufs);
+                    let bss_data = alloc_bss(bss_sz, bss_bufs);
                     segments.push(Segment {
                         va: Va::new(last_end),
                         data: bss_data,
@@ -168,9 +173,10 @@ pub(super) fn parse_elf(
                 let byte_scannable = !section_infos
                     .iter()
                     .any(|s| !s.byte_scannable && s.va < ph_va_end && s.end > ph_va);
+                // Safety: `bytes` is the mmap kept alive by LoadedBinary.
                 segments.push(Segment {
                     va: Va::new(ph_va),
-                    data,
+                    data: unsafe { SegData::new(data) },
                     executable: exec,
                     readable: read,
                     writable: write,
@@ -184,7 +190,7 @@ pub(super) fn parse_elf(
         if ph.p_memsz > ph.p_filesz {
             let bss_va = ph_va + ph.p_filesz;
             let bss_sz = (ph.p_memsz - ph.p_filesz) as usize;
-            let bss_data: &'static [u8] = alloc_bss(bss_sz, bss_bufs);
+            let bss_data = alloc_bss(bss_sz, bss_bufs);
             segments.push(Segment {
                 va: Va::new(bss_va),
                 data: bss_data,

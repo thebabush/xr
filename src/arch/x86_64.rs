@@ -731,13 +731,13 @@ fn gpr_index(reg: Register) -> Option<GprIdx> {
 mod tests {
     use super::*;
     use crate::arch::ScanRegion;
-    use crate::loader::{DecodeMode, Segment};
+    use crate::loader::{DecodeMode, SegData, Segment};
     use crate::xref::{Confidence, XrefKind};
 
     fn fake_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(va),
-            data,
+            data: unsafe { SegData::new(data) },
             executable: true,
             readable: true,
             writable: false,
@@ -750,7 +750,7 @@ mod tests {
     fn fake_data_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
             va: Va::new(va),
-            data,
+            data: unsafe { SegData::new(data) },
             executable: false,
             readable: true,
             writable: false,
