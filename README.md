@@ -64,6 +64,19 @@ $ xr binary -k call --limit 2 -B 2 -A 1
     0x00000000006a26db  48 83 c4 18               add rsp, 18h
 ```
 
+With Rust string heuristics (`--rust`):
+```
+$ xr target/release/my_app --rust -k data_ptr
+...
+0x00000001002b0238 -> 0x0000000100243834  data_ptr  [byte-scan]  "STRIKETHROUGH"
+0x00000001002b0940 -> 0x000000010024d728  data_ptr  [byte-scan]  "true"
+0x00000001002b0950 -> 0x000000010024b87d  data_ptr  [byte-scan]  "false"
+0x00000001002b4b68 -> 0x00000001002744d2  data_ptr  [byte-scan]  "failed to write the buffered data"
+0x00000001002b5de0 -> 0x000000010022e8b0  data_ptr  [byte-scan]  "src/arch/arm64.rs"
+0x00000001002b5e10 -> 0x000000010022e8c2  data_ptr  [byte-scan]  "src/arch/x86_64.rs"
+0x00000001002b60d8 -> 0x000000010022ead7  data_ptr  [byte-scan]  "src/loader/macho.rs"
+```
+
 ## Analysis Depths
 
 | Flag | Name | What it does |
@@ -110,34 +123,6 @@ OPTIONS:
         --rust-min-blob <N>     Min UTF-8 blob size in bytes [default: 16]
         --rust-string-max <N>   Max display width for strings (0 = unlimited) [default: 100]
 ```
-
-## Rust String Extraction
-
-Rust compiles string literals (`&str`) into large concatenated blobs in
-`.rodata`. Each reference is a `(ptr, len)` pair — the pointer lands somewhere
-inside a blob, and the length tells you where the string ends. With `--rust`,
-`xr` finds those blobs and resolves every `data_ptr` xref that points into one:
-
-```
-$ xr target/release/my_app --rust -k data_ptr
-...
-0x00000001002b0238 -> 0x0000000100243834  data_ptr  [byte-scan]  "STRIKETHROUGH"
-0x00000001002b0940 -> 0x000000010024d728  data_ptr  [byte-scan]  "true"
-0x00000001002b0950 -> 0x000000010024b87d  data_ptr  [byte-scan]  "false"
-0x00000001002b2850 -> 0x00000001002546d9  data_ptr  [byte-scan]  "__.SYMDEF"
-0x00000001002b4b68 -> 0x00000001002744d2  data_ptr  [byte-scan]  "failed to write the buffered data"
-0x00000001002b5de0 -> 0x000000010022e8b0  data_ptr  [byte-scan]  "src/arch/arm64.rs"
-0x00000001002b5e10 -> 0x000000010022e8c2  data_ptr  [byte-scan]  "src/arch/x86_64.rs"
-0x00000001002b60d8 -> 0x000000010022ead7  data_ptr  [byte-scan]  "src/loader/macho.rs"
-```
-
-Long strings are truncated with a middle ellipsis (configurable via
-`--rust-string-max`). Works with JSONL and CSV too — the string appears in a
-`"string"` field.
-
-This is especially useful for stripped Rust binaries where symbols are gone
-but panic messages, error strings, and file paths survive in `.rodata` —
-giving you landmarks to navigate the binary.
 
 ## Benchmarking
 
