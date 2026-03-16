@@ -217,7 +217,10 @@ pub(super) fn parse_elf(
         if let Some(name) = elf.strtab.get_at(sym.st_name) {
             if !name.is_empty() {
                 let va = Va::new((sym.st_value & !1) + pie_base);
-                symbols.push(Symbol { name: name.to_string(), va });
+                symbols.push(Symbol {
+                    name: name.to_string(),
+                    va,
+                });
             }
         }
     }
@@ -225,7 +228,15 @@ pub(super) fn parse_elf(
     let got_slots = build_elf_got_slots(elf, pie_base);
     let reloc_pointers = build_elf_reloc_pointers(elf, pie_base, &segments);
 
-    Ok(ParseResult { arch, segments, entry_points, symbols, pie_base, got_slots, reloc_pointers })
+    Ok(ParseResult {
+        arch,
+        segments,
+        entry_points,
+        symbols,
+        pie_base,
+        got_slots,
+        reloc_pointers,
+    })
 }
 
 fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
@@ -272,12 +283,16 @@ fn build_elf_reloc_pointers(
         if r_type == R_X86_64_RELATIVE || r_type == R_AARCH64_RELATIVE {
             let target = Va::new((rel.r_addend.unwrap_or(0) as u64).wrapping_add(pie_base));
             if seg_set.contains(target) {
-                result.push(RelocPointer { from: Va::new(from), to: target });
+                result.push(RelocPointer {
+                    from: Va::new(from),
+                    to: target,
+                });
             }
-        } else if (r_type == R_X86_64_64 || r_type == R_AARCH64_ABS64)
-            && rel.r_sym != 0
-        {
-            let sym = &elf.dynsyms.get(rel.r_sym).or_else(|| elf.syms.get(rel.r_sym));
+        } else if (r_type == R_X86_64_64 || r_type == R_AARCH64_ABS64) && rel.r_sym != 0 {
+            let sym = &elf
+                .dynsyms
+                .get(rel.r_sym)
+                .or_else(|| elf.syms.get(rel.r_sym));
             if let Some(sym) = sym {
                 if sym.st_shndx != SHN_UNDEF as usize && sym.st_value != 0 {
                     let target = Va::new(
@@ -286,7 +301,10 @@ fn build_elf_reloc_pointers(
                             .wrapping_add(rel.r_addend.unwrap_or(0) as u64),
                     );
                     if seg_set.contains(target) {
-                        result.push(RelocPointer { from: Va::new(from), to: target });
+                        result.push(RelocPointer {
+                            from: Va::new(from),
+                            to: target,
+                        });
                     }
                 }
             }

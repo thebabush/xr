@@ -14,6 +14,43 @@ use std::io::Write as IoWrite;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Truncate a string with a middle ellipsis if it exceeds `max_width`.
+///
+/// If `max_width` is 0, returns the original string unchanged.
+/// Otherwise, keeps roughly half from the start and half from the end,
+/// joined by "...".
+pub fn truncate_middle(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return s.to_string();
+    }
+
+    let char_count = s.chars().count();
+    if char_count <= max_width {
+        return s.to_string();
+    }
+
+    // Account for the ellipsis (3 chars)
+    if max_width <= 3 {
+        return s.chars().take(max_width).collect();
+    }
+
+    let available = max_width - 3; // "..."
+    let left_len = available.div_ceil(2); // slightly favor left side
+    let right_len = available / 2;
+
+    let left: String = s.chars().take(left_len).collect();
+    let right: String = s
+        .chars()
+        .rev()
+        .take(right_len)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    format!("{left}...{right}")
+}
+
 /// Build a space-separated lowercase hex string from raw bytes.
 /// Single pre-allocated `String` — no intermediate `Vec<String>`.
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -76,6 +113,10 @@ pub struct XrefRecord {
     /// Present when `-A`/`-B` (after/before context) is non-zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Vec<ContextLine>>,
+    /// Extracted string literal (when `--rust` and this is a data_ptr into a string blob).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "string")]
+    pub rust_string: Option<String>,
 }
 
 fn serialize_kind<S: serde::Serializer>(k: &XrefKind, s: S) -> Result<S::Ok, S::Error> {
@@ -125,7 +166,31 @@ impl Printer for TextPrinter {
         buf.extend_from_slice(r.kind.name().as_bytes());
         buf.extend_from_slice(b"  [");
         buf.extend_from_slice(r.confidence.name().as_bytes());
-        buf.extend_from_slice(b"]\n");
+        buf.extend_from_slice(b"]");
+        // Append Rust string if present
+        if let Some(s) = &r.rust_string {
+            buf.extend_from_slice(b"  \"");
+            // Escape for display: replace newlines, etc.
+            for c in s.chars() {
+                match c {
+                    '\n' => buf.extend_from_slice(b"\\n"),
+                    '\r' => buf.extend_from_slice(b"\\r"),
+                    '\t' => buf.extend_from_slice(b"\\t"),
+                    '"' => buf.extend_from_slice(b"\\\""),
+                    '\\' => buf.extend_from_slice(b"\\\\"),
+                    c if c.is_control() => {
+                        // \xNN for other control chars
+                        let _ = write!(buf, "\\x{:02x}", c as u32);
+                    }
+                    c => {
+                        let mut tmp = [0u8; 4];
+                        buf.extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
+                    }
+                }
+            }
+            buf.extend_from_slice(b"\"");
+        }
+        buf.push(b'\n');
         if let Some(ctx) = &r.context {
             for line in ctx {
                 if line.focus {
@@ -177,17 +242,83 @@ pub struct CsvPrinter;
 
 impl Printer for CsvPrinter {
     fn header_bytes(&self) -> Vec<u8> {
-        b"from,to,kind,confidence\n".to_vec()
+        b"from,to,kind,confidence,string\n".to_vec()
     }
 
     fn write_record(&self, r: &XrefRecord, buf: &mut Vec<u8>) {
+        // Quote the string field to handle commas, quotes, newlines in content.
+        let string_field = match &r.rust_string {
+            Some(s) => {
+                let escaped = s.replace('"', "\"\"");
+                format!("\"{}\"", escaped)
+            }
+            None => String::new(),
+        };
         let _ = writeln!(
             buf,
-            "{:#x},{:#x},{},{}",
+            "{:#x},{:#x},{},{},{}",
             r.from,
             r.to,
             r.kind.name(),
             r.confidence.name(),
+            string_field,
         );
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_middle_no_truncation_needed() {
+        assert_eq!(truncate_middle("short", 80), "short");
+        assert_eq!(truncate_middle("exactly80chars", 80), "exactly80chars");
+    }
+
+    #[test]
+    fn test_truncate_middle_zero_means_unlimited() {
+        let long = "a".repeat(200);
+        assert_eq!(truncate_middle(&long, 0), long);
+    }
+
+    #[test]
+    fn test_truncate_middle_basic() {
+        let s = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
+        let result = truncate_middle(s, 10);
+        assert_eq!(result.len(), 10);
+        assert!(result.contains("..."));
+        assert_eq!(result, "abcd...xyz");
+    }
+
+    #[test]
+    fn test_truncate_middle_path() {
+        let path = "/Users/babush/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstream-0.6.21/src/adapter/strip.rs";
+        let result = truncate_middle(path, 80);
+        assert_eq!(result.len(), 80);
+        assert!(result.starts_with("/Users/babush"));
+        assert!(result.ends_with("strip.rs"));
+        assert!(result.contains("..."));
+    }
+
+    #[test]
+    fn test_truncate_middle_very_short_max() {
+        // max_width=5 with 10-char string: 1 left + "..." + 1 right
+        assert_eq!(truncate_middle("abcdefghij", 5), "a...j");
+        // max_width=4: 1 left + "..." + 0 right (available=1, ceil(1/2)=1, floor=0)
+        assert_eq!(truncate_middle("abcdefghij", 4), "a...");
+        // max_width <= 3: just take first chars (no room for ellipsis + content)
+        assert_eq!(truncate_middle("abcdefghij", 3), "abc");
+        assert_eq!(truncate_middle("abcdefghij", 1), "a");
+    }
+
+    #[test]
+    fn test_truncate_middle_unicode() {
+        let s = "café résumé naïve"; // contains multi-byte chars
+        let result = truncate_middle(s, 12);
+        assert!(result.chars().count() <= 12);
+        assert!(result.contains("..."));
     }
 }

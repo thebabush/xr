@@ -322,7 +322,11 @@ impl Arm64Insn {
         let word = self.word();
         let imm12 = ((word >> 10) & 0xFFF) as u64;
         let shift = (word >> 22) & 0x3;
-        if shift == 1 { imm12 << 12 } else { imm12 }
+        if shift == 1 {
+            imm12 << 12
+        } else {
+            imm12
+        }
     }
 
     /// Access size for LDR/STR (unsigned offset): bits [31:30].

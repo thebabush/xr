@@ -44,7 +44,9 @@ impl Va {
     /// Accepts `0x`/`0X`-prefixed hexadecimal or plain decimal.
     pub fn parse(s: &str) -> Result<Va, String> {
         if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-            u64::from_str_radix(hex, 16).map(Va).map_err(|e| e.to_string())
+            u64::from_str_radix(hex, 16)
+                .map(Va)
+                .map_err(|e| e.to_string())
         } else {
             s.parse::<u64>().map(Va).map_err(|e| e.to_string())
         }

@@ -80,7 +80,10 @@ pub(super) fn parse_macho(
     if let Some(syms) = macho.symbols.as_ref() {
         for (name, nlist) in syms.iter().flatten() {
             if !name.is_empty() && nlist.n_value != 0 {
-                symbols.push(Symbol { name: name.to_string(), va: Va::new(nlist.n_value) });
+                symbols.push(Symbol {
+                    name: name.to_string(),
+                    va: Va::new(nlist.n_value),
+                });
             }
         }
     }
@@ -257,11 +260,7 @@ fn build_macho_fixup_pointers(
     // LC_SEGMENT_64 order.  `segment_offset` in each starts-in-segment
     // record is the segment's file offset, so:
     //   slot_va = seg_vmaddr + (chain_off - segment_offset)
-    let seg_vmaddrs: Vec<u64> = macho
-        .segments
-        .iter()
-        .map(|s| s.vmaddr)
-        .collect();
+    let seg_vmaddrs: Vec<u64> = macho.segments.iter().map(|s| s.vmaddr).collect();
 
     let Some(lc) = macho.load_commands.iter().find_map(|lc| {
         if let CommandVariant::DyldChainedFixups(ref cmd) = lc.command {
@@ -280,16 +279,17 @@ fn build_macho_fixup_pointers(
     }
 
     let starts_offset = u32::from_le_bytes(
-        bytes[data_off + 4..data_off + 8].try_into().expect("checked above"),
+        bytes[data_off + 4..data_off + 8]
+            .try_into()
+            .expect("checked above"),
     ) as usize;
 
     let si_off = data_off + starts_offset;
     if si_off + 4 > bytes.len() {
         return Vec::new();
     }
-    let seg_count = u32::from_le_bytes(
-        bytes[si_off..si_off + 4].try_into().expect("checked above"),
-    ) as usize;
+    let seg_count =
+        u32::from_le_bytes(bytes[si_off..si_off + 4].try_into().expect("checked above")) as usize;
 
     let mut result = Vec::new();
 
@@ -299,7 +299,9 @@ fn build_macho_fixup_pointers(
             break;
         }
         let seg_info_off = u32::from_le_bytes(
-            bytes[off_off..off_off + 4].try_into().expect("checked above"),
+            bytes[off_off..off_off + 4]
+                .try_into()
+                .expect("checked above"),
         ) as usize;
         if seg_info_off == 0 {
             continue;
@@ -310,18 +312,15 @@ fn build_macho_fixup_pointers(
             continue;
         }
 
-        let page_size = u16::from_le_bytes(
-            bytes[ss_off + 4..ss_off + 6].try_into().expect("checked"),
-        ) as usize;
-        let pointer_format = u16::from_le_bytes(
-            bytes[ss_off + 6..ss_off + 8].try_into().expect("checked"),
-        );
-        let segment_offset = u64::from_le_bytes(
-            bytes[ss_off + 8..ss_off + 16].try_into().expect("checked"),
-        );
-        let page_count = u16::from_le_bytes(
-            bytes[ss_off + 20..ss_off + 22].try_into().expect("checked"),
-        ) as usize;
+        let page_size =
+            u16::from_le_bytes(bytes[ss_off + 4..ss_off + 6].try_into().expect("checked")) as usize;
+        let pointer_format =
+            u16::from_le_bytes(bytes[ss_off + 6..ss_off + 8].try_into().expect("checked"));
+        let segment_offset =
+            u64::from_le_bytes(bytes[ss_off + 8..ss_off + 16].try_into().expect("checked"));
+        let page_count =
+            u16::from_le_bytes(bytes[ss_off + 20..ss_off + 22].try_into().expect("checked"))
+                as usize;
 
         let fmt = match ChainedPtrFormat::from_raw(pointer_format) {
             Some(f) => f,
@@ -338,16 +337,14 @@ fn build_macho_fixup_pointers(
             if ps_off + 2 > bytes.len() {
                 break;
             }
-            let page_start = u16::from_le_bytes(
-                bytes[ps_off..ps_off + 2].try_into().expect("checked"),
-            );
+            let page_start =
+                u16::from_le_bytes(bytes[ps_off..ps_off + 2].try_into().expect("checked"));
             const DYLD_CHAINED_PTR_START_NONE: u16 = 0xFFFF;
             if page_start == DYLD_CHAINED_PTR_START_NONE {
                 continue;
             }
 
-            let mut chain_off =
-                segment_offset as usize + p_idx * page_size + page_start as usize;
+            let mut chain_off = segment_offset as usize + p_idx * page_size + page_start as usize;
 
             loop {
                 if chain_off + 8 > bytes.len() {
@@ -366,7 +363,10 @@ fn build_macho_fixup_pointers(
                     let offset_in_seg = chain_off as u64 - segment_offset;
                     let slot_va = Va::new(seg_vmaddr + offset_in_seg);
                     if seg_set.contains(target_va) {
-                        result.push(RelocPointer { from: slot_va, to: target_va });
+                        result.push(RelocPointer {
+                            from: slot_va,
+                            to: target_va,
+                        });
                     }
                 }
 
@@ -570,7 +570,10 @@ mod tests {
     #[test]
     fn test_from_raw_unknown_formats() {
         for f in [0, 3, 4, 5, 7, 8, 10, 11, 13, 100] {
-            assert!(ChainedPtrFormat::from_raw(f).is_none(), "format {f} should be None");
+            assert!(
+                ChainedPtrFormat::from_raw(f).is_none(),
+                "format {f} should be None"
+            );
         }
     }
 

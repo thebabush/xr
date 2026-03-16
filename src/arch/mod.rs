@@ -47,8 +47,6 @@ impl<'a> ScanRegion<'a> {
     }
 }
 
-
-
 // ── Segment flags ─────────────────────────────────────────────────────────────
 
 /// Per-segment attribute bitmask stored in [`SegmentIndex`] and
@@ -136,7 +134,8 @@ impl SegmentIndex {
     /// True if `va` falls within an executable segment.
     #[inline]
     pub(crate) fn is_exec(&self, va: Va) -> bool {
-        self.entry_at(va).is_some_and(|f| f.contains(SegFlags::EXEC))
+        self.entry_at(va)
+            .is_some_and(|f| f.contains(SegFlags::EXEC))
     }
 
     /// Returns the flags for the segment covering `va`, or None if unmapped.

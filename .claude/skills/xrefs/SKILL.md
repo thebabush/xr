@@ -46,6 +46,9 @@ xr [OPTIONS] <BINARY>
   --base VA               Override PIE ELF load base (default 0x400000)
   --limit N               Cap output at N results
   -j N                    Worker threads (0 = all CPUs)
+  --rust                  Extract Rust string literals from data_ptr xrefs
+  --rust-min-blob N       Min UTF-8 blob size in bytes (default: 16)
+  --rust-string-max N     Max display width for strings; 0 = no limit (default: 100)
 ```
 
 VAs accept `0x`-prefixed hex or plain decimal.
@@ -130,7 +133,35 @@ xr /System/Library/dyld/dyld_shared_cache_arm64e \
   --ref-start 0x1a3b00000 --ref-end 0x1a3b00010 -k call -B 2
 ```
 
-### 9. Quick call graph (JSONL + jq)
+### 9. Extract Rust string literals from a stripped binary
+
+```bash
+# Show all data pointers that resolve to string literals
+xr rust_binary --rust -k data_ptr
+
+# Grep for a specific error message to find where it's referenced
+xr rust_binary --rust -k data_ptr 2>/dev/null | grep "connection refused"
+
+# Find all string refs in a function's address range
+xr rust_binary --rust -k data_ptr --start 0x401000 --end 0x402000
+
+# JSONL output with string field for scripting
+xr rust_binary --rust -k data_ptr -f jsonl \
+  | jq -r 'select(.string) | "\(.from) \(.string)"'
+
+# Widen blobs for binaries with many small strings
+xr rust_binary --rust --rust-min-blob 8 -k data_ptr
+
+# Show full strings without truncation
+xr rust_binary --rust --rust-string-max 0 -k data_ptr
+```
+
+Rust concatenates string literals into large blobs in `.rodata`. Each `&str` is
+a `(ptr, len)` pair — `--rust` resolves these automatically. Especially useful
+for stripped binaries where symbols are gone but panic messages, error strings,
+and file paths survive — giving you landmarks to navigate the binary.
+
+### 10. Quick call graph (JSONL + jq)
 
 ```bash
 xr binary -k call -f jsonl \
@@ -153,14 +184,20 @@ Or use text format for human-readable hex output.
 0x0000000000401234 -> 0x0000000000403000  call  [linear-immediate]
 ```
 With `-B`/`-A`, indented disasm lines follow each xref entry.
+With `--rust`, resolved strings are appended inline:
+```
+0x00000001002b4b68 -> 0x00000001002744d2  data_ptr  [byte-scan]  "failed to write the buffered data"
+```
 
 **jsonl** (JSON Lines — one JSON object per line):
 ```
 {"from":4198964,"to":4206592,"kind":"call","confidence":"linear-immediate"}
 ```
 With `-B`/`-A`, each object gains a `"context"` array of `{va, hex, text, focus}`.
+With `--rust`, matching records gain a `"string"` field.
 
-**csv**: `from,to,kind,confidence` per line — no context even with `-B`/`-A`.
+**csv**: `from,to,kind,confidence,string` per line — no context even with `-B`/`-A`.
+The `string` column is populated when `--rust` is active.
 
 ## Analysis depth (`-d`)
 
@@ -197,3 +234,4 @@ With `-B`/`-A`, each object gains a `"context"` array of `{va, hex, text, focus}
   ```
 
   Similarly, if you find refs to a neighbor function `0x401300`, the caller likely also calls or is adjacent to your target — pivot to scanning that caller's range (`--start`/`--end`) to see what else it references.
+- **Stripped Rust binary?** Use `--rust` to recover string literals. Panic messages, error strings, and source file paths survive stripping and give you function-level landmarks even without symbols. Combine with `--start`/`--end` to see what strings a specific function references.

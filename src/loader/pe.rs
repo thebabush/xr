@@ -124,7 +124,10 @@ pub(super) fn parse_pe(
     let mut symbols = Vec::new();
     for export in &pe.exports {
         if let Some(name) = export.name {
-            symbols.push(Symbol { name: name.to_string(), va: Va::new(image_base + export.rva as u64) });
+            symbols.push(Symbol {
+                name: name.to_string(),
+                va: Va::new(image_base + export.rva as u64),
+            });
         }
     }
 
@@ -180,13 +183,19 @@ fn build_pe_pdata_xrefs(
         }
 
         let begin_rva = u32::from_le_bytes(
-            bytes[file_off..file_off + 4].try_into().expect("guarded by file_off + 12 <= len"),
+            bytes[file_off..file_off + 4]
+                .try_into()
+                .expect("guarded by file_off + 12 <= len"),
         );
         let end_rva = u32::from_le_bytes(
-            bytes[file_off + 4..file_off + 8].try_into().expect("guarded by file_off + 12 <= len"),
+            bytes[file_off + 4..file_off + 8]
+                .try_into()
+                .expect("guarded by file_off + 12 <= len"),
         );
         let unwind_rva = u32::from_le_bytes(
-            bytes[file_off + 8..file_off + 12].try_into().expect("guarded by file_off + 12 <= len"),
+            bytes[file_off + 8..file_off + 12]
+                .try_into()
+                .expect("guarded by file_off + 12 <= len"),
         );
 
         let from = Va::new(image_base + entry_rva as u64);
@@ -202,7 +211,9 @@ fn build_pe_pdata_xrefs(
         }
     }
 
-    build_pe_unwind_handler_xrefs(bytes, image_base, dir_rva, dir_size, &sec_map, &seg_set, out);
+    build_pe_unwind_handler_xrefs(
+        bytes, image_base, dir_rva, dir_size, &sec_map, &seg_set, out,
+    );
 }
 
 fn build_pe_unwind_handler_xrefs(
@@ -351,13 +362,10 @@ fn build_pe_reloc_pointers(
 
     const IMAGE_REL_BASED_DIR64: u16 = 10;
 
-    let reloc_dir = pe
-        .header
-        .optional_header
-        .and_then(|oh| {
-            let dd = oh.data_directories.get_base_relocation_table()?;
-            Some((dd.virtual_address, dd.size))
-        });
+    let reloc_dir = pe.header.optional_header.and_then(|oh| {
+        let dd = oh.data_directories.get_base_relocation_table()?;
+        Some((dd.virtual_address, dd.size))
+    });
 
     if let Some((dir_rva, dir_size)) = reloc_dir {
         let reloc_size = dir_size as usize;
@@ -366,11 +374,12 @@ fn build_pe_reloc_pointers(
             let reloc_bytes = bytes.get(base_off..base_off + reloc_size).unwrap_or(&[]);
             let mut pos = 0usize;
             while pos + 8 <= reloc_bytes.len() {
-                let page_rva = u32::from_le_bytes(
-                    reloc_bytes[pos..pos + 4].try_into().expect("4-byte slice"),
-                );
+                let page_rva =
+                    u32::from_le_bytes(reloc_bytes[pos..pos + 4].try_into().expect("4-byte slice"));
                 let block_size = u32::from_le_bytes(
-                    reloc_bytes[pos + 4..pos + 8].try_into().expect("4-byte slice"),
+                    reloc_bytes[pos + 4..pos + 8]
+                        .try_into()
+                        .expect("4-byte slice"),
                 ) as usize;
                 if block_size < 8 || pos + block_size > reloc_bytes.len() {
                     break;
@@ -389,7 +398,10 @@ fn build_pe_reloc_pointers(
                         let slot_va = image_base + slot_rva as u64;
                         if let Some(ptr_val) = sec_map.read_u64_at_rva(bytes, slot_rva) {
                             if ptr_val != 0 && seg_set.contains(Va::new(ptr_val)) {
-                                result.push(RelocPointer { from: Va::new(slot_va), to: Va::new(ptr_val) });
+                                result.push(RelocPointer {
+                                    from: Va::new(slot_va),
+                                    to: Va::new(ptr_val),
+                                });
                             }
                         }
                     }

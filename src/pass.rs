@@ -2,8 +2,8 @@ use crate::arch::arm64;
 use crate::arch::x86_64;
 use crate::arch::{self, ScanRegion, SegmentDataIndex, SegmentIndex};
 use crate::loader::{Arch, DecodeMode, LoadedBinary, Segment};
-use crate::va::{Va, VaRange};
 use crate::shard::split_range;
+use crate::va::{Va, VaRange};
 use crate::xref::{Confidence, Xref};
 use rayon::prelude::*;
 use std::ops::ControlFlow;
@@ -211,33 +211,43 @@ impl<'a> XrefPass<'a> {
             // ByteScan is data-only — no instruction decoding.
             vec![]
         } else {
-        self
-            .binary
-            .code_segments()
-            .flat_map(|seg| {
-                let seg_end = seg.va + seg.data.len() as u64;
-                // Clamp to from_range before sharding — segments with no overlap
-                // produce an empty shard list and are skipped entirely.
-                let (scan_start, scan_end) = match from_range {
-                    Some(r) => (seg.va.max(r.start), seg_end.min(r.end)),
-                    None => (seg.va, seg_end),
-                };
-                if scan_start >= scan_end {
-                    return vec![];
-                }
-                let shards = split_range(scan_start.raw(), scan_end.raw(), n_workers, overlap, insn_align);
-                let n = shards.len();
-                let starts: Vec<Va> = shards.iter().map(|(s, _)| Va::new(*s)).collect();
-                shards
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(i, (start, end))| {
-                        let owned_end = if i + 1 < n { starts[i + 1] } else { scan_end };
-                        CodeShard { seg, scan_start: Va::new(start), scan_end: Va::new(end), owned_end }
-                    })
-                    .collect()
-            })
-            .collect()
+            self.binary
+                .code_segments()
+                .flat_map(|seg| {
+                    let seg_end = seg.va + seg.data.len() as u64;
+                    // Clamp to from_range before sharding — segments with no overlap
+                    // produce an empty shard list and are skipped entirely.
+                    let (scan_start, scan_end) = match from_range {
+                        Some(r) => (seg.va.max(r.start), seg_end.min(r.end)),
+                        None => (seg.va, seg_end),
+                    };
+                    if scan_start >= scan_end {
+                        return vec![];
+                    }
+                    let shards = split_range(
+                        scan_start.raw(),
+                        scan_end.raw(),
+                        n_workers,
+                        overlap,
+                        insn_align,
+                    );
+                    let n = shards.len();
+                    let starts: Vec<Va> = shards.iter().map(|(s, _)| Va::new(*s)).collect();
+                    shards
+                        .into_iter()
+                        .enumerate()
+                        .map(move |(i, (start, end))| {
+                            let owned_end = if i + 1 < n { starts[i + 1] } else { scan_end };
+                            CodeShard {
+                                seg,
+                                scan_start: Va::new(start),
+                                scan_end: Va::new(end),
+                                owned_end,
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
         };
 
         let data_shards: Vec<DataShard<'_>> = if depth >= Depth::ByteScan {
@@ -268,7 +278,11 @@ impl<'a> XrefPass<'a> {
                     );
                     shards
                         .into_iter()
-                        .map(move |(start, end)| DataShard { seg, scan_start: Va::new(start), scan_end: Va::new(end) })
+                        .map(move |(start, end)| DataShard {
+                            seg,
+                            scan_start: Va::new(start),
+                            scan_end: Va::new(end),
+                        })
                         .collect()
                 })
                 .collect()
@@ -376,13 +390,20 @@ impl<'a> XrefPass<'a> {
                 // Code shards — owned_end is the next shard's start (or seg_end).
                 // Xrefs with from >= owned_end are in the overlap lookahead and
                 // will be emitted by the next shard instead.
-                code_shards.into_par_iter().for_each_with(
-                    tx.clone(),
-                    |tx, shard| {
+                code_shards
+                    .into_par_iter()
+                    .for_each_with(tx.clone(), |tx, shard| {
                         if stop_workers.load(Ordering::Relaxed) {
                             return;
                         }
-                        let mut batch = scan_shard(shard.seg, shard.scan_start, shard.scan_end, arch, depth, &ctx);
+                        let mut batch = scan_shard(
+                            shard.seg,
+                            shard.scan_start,
+                            shard.scan_end,
+                            arch,
+                            depth,
+                            &ctx,
+                        );
                         batch.retain(|x| {
                             x.from < shard.owned_end
                                 && min_ref_va.is_none_or(|m| x.to >= m)
@@ -391,26 +412,23 @@ impl<'a> XrefPass<'a> {
                         if !batch.is_empty() {
                             let _ = tx.send(batch);
                         }
-                    },
-                );
+                    });
 
                 // Data shards (no overlap, no ownership trimming needed)
-                data_shards
-                    .into_par_iter()
-                    .for_each_with(tx, |tx, shard| {
-                        if stop_workers.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        let region = ScanRegion::new(shard.seg, shard.scan_start, shard.scan_end);
-                        let mut batch = arch::byte_scan_pointers(&region, ctx.data_idx, ptr_size);
-                        batch.retain(|x| {
-                            min_ref_va.is_none_or(|m| x.to >= m)
-                                && to_range.is_none_or(|r| r.contains(x.to))
-                        });
-                        if !batch.is_empty() {
-                            let _ = tx.send(batch);
-                        }
+                data_shards.into_par_iter().for_each_with(tx, |tx, shard| {
+                    if stop_workers.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let region = ScanRegion::new(shard.seg, shard.scan_start, shard.scan_end);
+                    let mut batch = arch::byte_scan_pointers(&region, ctx.data_idx, ptr_size);
+                    batch.retain(|x| {
+                        min_ref_va.is_none_or(|m| x.to >= m)
+                            && to_range.is_none_or(|r| r.contains(x.to))
                     });
+                    if !batch.is_empty() {
+                        let _ = tx.send(batch);
+                    }
+                });
             });
 
             // Drop scan tx so scan channel closes → drain thread exits → drops
@@ -1096,7 +1114,9 @@ mod tests {
                 n / 2,
                 "workers={workers}: middle-half from_range"
             );
-            assert!(xrefs.iter().all(|x| x.from >= Va::new(q1) && x.from < Va::new(q3)));
+            assert!(xrefs
+                .iter()
+                .all(|x| x.from >= Va::new(q1) && x.from < Va::new(q3)));
         }
     }
 
@@ -1199,7 +1219,10 @@ mod tests {
             PassConfig {
                 depth: Depth::Linear,
                 workers: 1,
-                from_range: Some(VaRange::new(Va::new(base_a), Va::new(base_a + n as u64 * 4))),
+                from_range: Some(VaRange::new(
+                    Va::new(base_a),
+                    Va::new(base_a + n as u64 * 4),
+                )),
                 to_range: Some(VaRange::new(Va::new(target_a), Va::new(target_a + 4))),
                 ..Default::default()
             },

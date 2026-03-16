@@ -3,7 +3,10 @@ use clap::{Parser, ValueEnum};
 use std::io::Write as _;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
-use xr::output::{ContextLine, CsvPrinter, JsonlPrinter, Printer, TextPrinter, XrefRecord};
+use xr::output::{
+    truncate_middle, ContextLine, CsvPrinter, JsonlPrinter, Printer, TextPrinter, XrefRecord,
+};
+use xr::rust::StringBlobIndex;
 use xr::va::VaRange;
 use xr::xref::XrefKind;
 use xr::{Depth, LoadedBinary, PassConfig, Va, XrefPass};
@@ -82,6 +85,21 @@ struct Cli {
     /// Retain only xrefs whose `to` address < this VA (hex or decimal).
     #[arg(long, value_parser = Va::parse)]
     ref_end: Option<Va>,
+
+    /// Enable Rust-specific analysis: extract string literals from binaries.
+    /// Scans .rodata for UTF-8 blobs and resolves (ptr, len) pairs to strings.
+    #[arg(long)]
+    rust: bool,
+
+    /// Minimum size (bytes) for UTF-8 blobs when using --rust (default: 16).
+    /// Rust concatenates string literals into large pools; this filters noise.
+    #[arg(long, default_value = "16")]
+    rust_min_blob: usize,
+
+    /// Max display width for extracted Rust strings (0 = no limit).
+    /// Longer strings are truncated with a middle ellipsis.
+    #[arg(long, default_value = "100")]
+    rust_string_max: usize,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -116,6 +134,34 @@ impl KindFilter {
     }
 }
 
+/// Extract a Rust string from a (ptr, len) pair.
+///
+/// `from` is the VA of the pointer (the `to` field points into the string blob).
+/// The length is read from `from + ptr_size`.
+fn extract_rust_string(
+    binary: &LoadedBinary,
+    blobs: &StringBlobIndex,
+    from: Va,
+    to: Va,
+) -> Option<String> {
+    let blob = blobs.lookup(to)?;
+
+    let ptr_size: usize = match binary.arch {
+        xr::Arch::X86_64 | xr::Arch::Arm64 => 8,
+        xr::Arch::X86 | xr::Arch::Arm32 => 4,
+        xr::Arch::Unknown => return None,
+    };
+
+    let len = xr::rust::read_usize_at(binary, from + ptr_size as u64, ptr_size)?;
+
+    // Sanity check
+    if len == 0 || len > 1_000_000 {
+        return None;
+    }
+
+    blob.extract(to, len).map(|s| s.to_string())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let depth = cli.depth;
@@ -128,6 +174,23 @@ fn main() -> Result<()> {
         binary.segments.len(),
         binary.entry_points.len()
     );
+
+    // Build Rust string blob index if --rust is enabled
+    let blob_index = if cli.rust {
+        eprintln!(
+            "scanning for Rust string blobs (min_len={})...",
+            cli.rust_min_blob
+        );
+        let idx = StringBlobIndex::build(&binary, cli.rust_min_blob);
+        eprintln!(
+            "found {} blobs, {} total bytes",
+            idx.len(),
+            idx.total_bytes()
+        );
+        Some(idx)
+    } else {
+        None
+    };
 
     let min_ref_va = Some(cli.min_ref_va.unwrap_or_else(|| binary.min_va()));
 
@@ -223,12 +286,26 @@ fn main() -> Result<()> {
                 } else {
                     None
                 };
+
+                // Extract Rust string if this is a data_ptr into a string blob
+                let rust_string = if let Some(ref blobs) = blob_index {
+                    if x.kind.scored_kind() == XrefKind::DataPointer {
+                        extract_rust_string(&binary, blobs, x.from, x.to)
+                            .map(|s| truncate_middle(&s, cli.rust_string_max))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 let record = XrefRecord {
                     from: x.from,
                     to: x.to,
                     kind: x.kind,
                     confidence: x.confidence,
                     context,
+                    rust_string,
                 };
                 printer.write_record(&record, &mut buf);
             }

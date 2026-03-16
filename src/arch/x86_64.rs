@@ -441,8 +441,7 @@ fn update_jt_state(
         // Verify that the other operand's reg_vals matches the target_base
         // to avoid false positives from unrelated ADDs.
         Code::Add_rm64_r64 | Code::Add_r64_rm64
-            if insn.op0_kind() == OpKind::Register
-                && insn.op1_kind() == OpKind::Register =>
+            if insn.op0_kind() == OpKind::Register && insn.op1_kind() == OpKind::Register =>
         {
             let src = insn.op1_register();
             if let Some(si) = gpr_index(src) {
@@ -484,10 +483,7 @@ fn update_jt_state(
 fn update_cmp_state(insn: &Instruction, cmp_bound: &mut [Option<u32>; 16]) {
     // CMP rN, imm → set bound
     match insn.code() {
-        Code::Cmp_rm64_imm32
-        | Code::Cmp_rm32_imm32
-        | Code::Cmp_RAX_imm32
-        | Code::Cmp_EAX_imm32 => {
+        Code::Cmp_rm64_imm32 | Code::Cmp_rm32_imm32 | Code::Cmp_RAX_imm32 | Code::Cmp_EAX_imm32 => {
             if insn.op0_kind() == OpKind::Register {
                 if let Some(ri) = gpr_index(insn.op0_register()) {
                     let imm = insn.immediate32() as u64;
@@ -521,13 +517,11 @@ fn update_cmp_state(insn: &Instruction, cmp_bound: &mut [Option<u32>; 16]) {
         insn.code(),
         Code::Mov_r32_rm32 | Code::Mov_rm32_r32 | Code::Mov_r64_rm64 | Code::Mov_rm64_r64
     );
-    if is_mov_reg
-        && insn.op0_kind() == OpKind::Register
-        && insn.op1_kind() == OpKind::Register
-    {
-        if let (Some(di), Some(si)) =
-            (gpr_index(insn.op0_register()), gpr_index(insn.op1_register()))
-        {
+    if is_mov_reg && insn.op0_kind() == OpKind::Register && insn.op1_kind() == OpKind::Register {
+        if let (Some(di), Some(si)) = (
+            gpr_index(insn.op0_register()),
+            gpr_index(insn.op1_register()),
+        ) {
             cmp_bound[di] = cmp_bound[si];
             return;
         }
@@ -912,14 +906,14 @@ mod tests {
         //   0x1015: CC                       int3 (padding)
         //   0x1016: CC                       int3 (JA target)
         static CODE: [u8; 23] = [
-            0x83, 0xFA, 0x01,                           // cmp edx, 1
-            0x77, 0x11,                                 // ja +0x11 (→ 0x1016)
+            0x83, 0xFA, 0x01, // cmp edx, 1
+            0x77, 0x11, // ja +0x11 (→ 0x1016)
             0x48, 0x8D, 0x0D, 0xF4, 0x1F, 0x00, 0x00, // lea rcx, [rip+0x1FF4]
-            0x48, 0x63, 0x04, 0x91,                     // movsxd rax, [rcx+rdx*4]
-            0x48, 0x01, 0xC8,                           // add rax, rcx
-            0xFF, 0xE0,                                 // jmp rax
-            0xCC,                                       // int3
-            0xCC,                                       // int3 (JA target)
+            0x48, 0x63, 0x04, 0x91, // movsxd rax, [rcx+rdx*4]
+            0x48, 0x01, 0xC8, // add rax, rcx
+            0xFF, 0xE0, // jmp rax
+            0xCC, // int3
+            0xCC, // int3 (JA target)
         ];
         // Table at 0x3000: two i32 offsets → targets at 0x2000, 0x2004
         //   entry 0: 0x2000 - 0x3000 = -0x1000 = 0xFFFFF000
@@ -940,16 +934,30 @@ mod tests {
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_with_prop(&region_for(&code_seg), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_with_prop(
+            &region_for(&code_seg),
+            &idx,
+            &FxHashSet::default(),
+            &data_idx,
+        );
 
         // Should have Jump xrefs from 0x1013 to 0x2000 and 0x2004
         let jumps: Vec<&Xref> = xrefs
             .iter()
             .filter(|x| x.kind == XrefKind::Jump && x.confidence == Confidence::LocalProp)
             .collect();
-        assert_eq!(jumps.len(), 2, "expected 2 jump table targets, got {}", jumps.len());
-        assert!(jumps.iter().any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x2000)));
-        assert!(jumps.iter().any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x2004)));
+        assert_eq!(
+            jumps.len(),
+            2,
+            "expected 2 jump table targets, got {}",
+            jumps.len()
+        );
+        assert!(jumps
+            .iter()
+            .any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x2000)));
+        assert!(jumps
+            .iter()
+            .any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x2004)));
     }
 
     /// Jump table with forward offsets (positive i32 values) and CMP bound.
@@ -959,14 +967,14 @@ mod tests {
         //   entry 0: 0x4000 - 0x3000 = +0x1000
         //   entry 1: 0x4100 - 0x3000 = +0x1100
         static CODE: [u8; 23] = [
-            0x83, 0xFA, 0x01,                           // cmp edx, 1
-            0x77, 0x11,                                 // ja +0x11
+            0x83, 0xFA, 0x01, // cmp edx, 1
+            0x77, 0x11, // ja +0x11
             0x48, 0x8D, 0x0D, 0xF4, 0x1F, 0x00, 0x00, // lea rcx, [rip+0x1FF4] → 0x3000
-            0x48, 0x63, 0x04, 0x91,                     // movsxd rax, [rcx+rdx*4]
-            0x48, 0x01, 0xC8,                           // add rax, rcx
-            0xFF, 0xE0,                                 // jmp rax
-            0xCC,                                       // int3
-            0xCC,                                       // int3
+            0x48, 0x63, 0x04, 0x91, // movsxd rax, [rcx+rdx*4]
+            0x48, 0x01, 0xC8, // add rax, rcx
+            0xFF, 0xE0, // jmp rax
+            0xCC, // int3
+            0xCC, // int3
         ];
         static TABLE: [u8; 8] = [
             0x00, 0x10, 0x00, 0x00, // +0x1000
@@ -983,24 +991,31 @@ mod tests {
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_with_prop(&region_for(&code_seg), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_with_prop(
+            &region_for(&code_seg),
+            &idx,
+            &FxHashSet::default(),
+            &data_idx,
+        );
 
         let jumps: Vec<&Xref> = xrefs
             .iter()
             .filter(|x| x.kind == XrefKind::Jump && x.confidence == Confidence::LocalProp)
             .collect();
         assert_eq!(jumps.len(), 2);
-        assert!(jumps.iter().any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x4000)));
-        assert!(jumps.iter().any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x4100)));
+        assert!(jumps
+            .iter()
+            .any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x4000)));
+        assert!(jumps
+            .iter()
+            .any(|x| x.from == Va::new(0x1013) && x.to == Va::new(0x4100)));
     }
 
     /// No jump xrefs when table entries don't resolve to executable addresses.
     #[test]
     fn test_jump_table_no_valid_targets() {
         static CODE: [u8; 16] = [
-            0x48, 0x8D, 0x0D, 0xF9, 0x1F, 0x00, 0x00,
-            0x48, 0x63, 0x04, 0x91,
-            0x48, 0x01, 0xC8,
+            0x48, 0x8D, 0x0D, 0xF9, 0x1F, 0x00, 0x00, 0x48, 0x63, 0x04, 0x91, 0x48, 0x01, 0xC8,
             0xFF, 0xE0,
         ];
         // Table offsets point to unmapped addresses (no target segment)
@@ -1010,19 +1025,24 @@ mod tests {
         ];
 
         let code_seg = fake_seg(0x1000, &CODE);
-        let segs = vec![
-            fake_seg(0x1000, &CODE),
-            fake_data_seg(0x3000, &TABLE),
-        ];
+        let segs = vec![fake_seg(0x1000, &CODE), fake_data_seg(0x3000, &TABLE)];
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_with_prop(&region_for(&code_seg), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_with_prop(
+            &region_for(&code_seg),
+            &idx,
+            &FxHashSet::default(),
+            &data_idx,
+        );
 
         let jumps: Vec<&Xref> = xrefs
             .iter()
             .filter(|x| x.kind == XrefKind::Jump && x.confidence == Confidence::LocalProp)
             .collect();
-        assert!(jumps.is_empty(), "should emit no jump table xrefs for unmapped targets");
+        assert!(
+            jumps.is_empty(),
+            "should emit no jump table xrefs for unmapped targets"
+        );
     }
 }

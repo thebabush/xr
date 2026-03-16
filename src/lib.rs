@@ -3,12 +3,14 @@ pub mod disasm;
 pub mod loader;
 pub mod output;
 pub mod pass;
+pub mod rust;
 pub(crate) mod shard;
 pub mod va;
 pub mod xref;
 
 pub use loader::{Arch, DecodeMode, LoadedBinary, RelocPointer, Segment, Symbol};
 pub use pass::{Depth, PassConfig, PassResult, XrefPass};
+pub use rust::{StringBlobIndex, DEFAULT_MIN_BLOB_LEN};
 pub use va::{Va, VaRange};
 pub use xref::{Confidence, Xref, XrefKind};
 

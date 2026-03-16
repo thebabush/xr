@@ -58,7 +58,11 @@ impl Reg {
     /// Returns `None` for register 31 (SP/ZR).
     #[inline]
     fn new(raw: u8) -> Option<Self> {
-        if raw < 31 { Some(Self(raw)) } else { None }
+        if raw < 31 {
+            Some(Self(raw))
+        } else {
+            None
+        }
     }
 
     /// Construct from an `Arm64Insn`'s Rd field.
@@ -139,14 +143,14 @@ struct CmpRegState {
 /// construction rather than at every use site.
 struct ScanState {
     adrp: [Option<AdrpRegState>; 32],
-    cmp:  [Option<CmpRegState>; 32],
+    cmp: [Option<CmpRegState>; 32],
 }
 
 impl ScanState {
     fn new() -> Self {
         Self {
             adrp: [None; 32],
-            cmp:  [None; 32],
+            cmp: [None; 32],
         }
     }
 
@@ -190,10 +194,7 @@ impl ScanState {
 
 /// Depth 1: linear scan, immediate targets only.
 /// No register tracking. Fast, no false positives on immediate targets.
-pub(crate) fn scan_linear(
-    region: &ScanRegion,
-    idx: &SegmentIndex,
-) -> Vec<Xref> {
+pub(crate) fn scan_linear(region: &ScanRegion, idx: &SegmentIndex) -> Vec<Xref> {
     let mut xrefs = Vec::new();
     let data = region.data;
     let base = region.base_va;
@@ -209,7 +210,9 @@ pub(crate) fn scan_linear(
         let offset = i * 4;
         let va = base + offset as u64;
         let word = u32::from_le_bytes(
-            data[offset..offset + 4].try_into().expect("4-byte aligned word"),
+            data[offset..offset + 4]
+                .try_into()
+                .expect("4-byte aligned word"),
         );
         let insn = Arm64Insn::decode(word);
         if let Some(xref) = immediate_xref(insn, va, idx) {
@@ -243,7 +246,9 @@ pub(crate) fn scan_adrp(
         let offset = i * 4;
         let va = base + offset as u64;
         let word = u32::from_le_bytes(
-            data[offset..offset + 4].try_into().expect("4-byte aligned word"),
+            data[offset..offset + 4]
+                .try_into()
+                .expect("4-byte aligned word"),
         );
 
         // Fast-path: most instructions are not in the tracked set (BL/B/ADRP/ADD/LDR/STR/…).
@@ -283,12 +288,15 @@ pub(crate) fn scan_adrp(
             Arm64Insn::Adrp(_) => {
                 if let Some(rd) = Reg::from_rd(insn) {
                     let page = insn.adrp_page(va.raw());
-                    state.set_adrp(rd, AdrpRegState {
-                        insn_index: i,
-                        origin_va: va,
-                        value: Va::new(page),
-                        source: RegSource::Direct,
-                    });
+                    state.set_adrp(
+                        rd,
+                        AdrpRegState {
+                            insn_index: i,
+                            origin_va: va,
+                            value: Va::new(page),
+                            source: RegSource::Direct,
+                        },
+                    );
                 }
             }
 
@@ -299,12 +307,15 @@ pub(crate) fn scan_adrp(
                 // this register can be resolved (e.g. STLXR [x19] where ADR set x19).
                 if let Some(rd) = Reg::from_rd(insn) {
                     let target = insn.adr_target(va.raw());
-                    state.set_adrp(rd, AdrpRegState {
-                        insn_index: i,
-                        origin_va: va,
-                        value: Va::new(target),
-                        source: RegSource::Direct,
-                    });
+                    state.set_adrp(
+                        rd,
+                        AdrpRegState {
+                            insn_index: i,
+                            origin_va: va,
+                            value: Va::new(target),
+                            source: RegSource::Direct,
+                        },
+                    );
                 }
             }
 
@@ -326,12 +337,15 @@ pub(crate) fn scan_adrp(
                                 });
                             }
                             if let Some(rd) = rd {
-                                state.set_adrp(rd, AdrpRegState {
-                                    insn_index: i,
-                                    origin_va: st.origin_va,
-                                    value: target,
-                                    source: RegSource::Direct,
-                                });
+                                state.set_adrp(
+                                    rd,
+                                    AdrpRegState {
+                                        insn_index: i,
+                                        origin_va: st.origin_va,
+                                        value: target,
+                                        source: RegSource::Direct,
+                                    },
+                                );
                             }
                             if rd != Some(rn) {
                                 state.clear_adrp(rn);
@@ -394,12 +408,15 @@ pub(crate) fn scan_adrp(
                                 confidence: Confidence::PairResolved,
                             });
                             if let Some(rt) = rt {
-                                state.set_adrp(rt, AdrpRegState {
-                                    insn_index: i,
-                                    origin_va: va,
-                                    value: Va::new(v),
-                                    source: RegSource::Chain,
-                                });
+                                state.set_adrp(
+                                    rt,
+                                    AdrpRegState {
+                                        insn_index: i,
+                                        origin_va: va,
+                                        value: Va::new(v),
+                                        source: RegSource::Chain,
+                                    },
+                                );
                             }
                         }
                     }
@@ -413,7 +430,8 @@ pub(crate) fn scan_adrp(
                         if i - st.insn_index <= ADRP_WINDOW {
                             let addr = st.value + insn.ldr_str_offset();
                             let is_writable_data = idx.flags_at(addr).is_some_and(|f| {
-                                f.contains(super::SegFlags::WRITE) && !f.contains(super::SegFlags::EXEC)
+                                f.contains(super::SegFlags::WRITE)
+                                    && !f.contains(super::SegFlags::EXEC)
                             });
                             if is_writable_data {
                                 xrefs.push(Xref {
@@ -432,7 +450,10 @@ pub(crate) fn scan_adrp(
                 // BLR Xn — indirect call via ADRP-resolved address (non-chain only).
                 if let Some(rn) = Reg::from_rn(insn) {
                     if let Some(st) = state.get_adrp(rn) {
-                        if st.source == RegSource::Direct && i - st.insn_index <= ADRP_WINDOW && idx.is_exec(st.value) {
+                        if st.source == RegSource::Direct
+                            && i - st.insn_index <= ADRP_WINDOW
+                            && idx.is_exec(st.value)
+                        {
                             xrefs.push(Xref {
                                 from: va,
                                 to: st.value,
@@ -448,7 +469,10 @@ pub(crate) fn scan_adrp(
                 // BR Xn — indirect jump via ADRP-resolved address (non-chain only).
                 if let Some(rn) = Reg::from_rn(insn) {
                     if let Some(st) = state.get_adrp(rn) {
-                        if st.source == RegSource::Direct && i - st.insn_index <= ADRP_WINDOW && idx.is_exec(st.value) {
+                        if st.source == RegSource::Direct
+                            && i - st.insn_index <= ADRP_WINDOW
+                            && idx.is_exec(st.value)
+                        {
                             xrefs.push(Xref {
                                 from: va,
                                 to: st.value,
@@ -576,9 +600,15 @@ impl JumpTableAddInfo {
     ) -> Option<i64> {
         match (entry_sz, self.sign_extend) {
             (JumpTableEntrySize::Byte, false) => data_idx.read_u8_at(slot_va).map(|v| v as i64),
-            (JumpTableEntrySize::Byte, true)  => data_idx.read_u8_at(slot_va).map(|v| (v as i8) as i64),
-            (JumpTableEntrySize::Halfword, false) => data_idx.read_u16_at(slot_va).map(|v| v as i64),
-            (JumpTableEntrySize::Halfword, true)  => data_idx.read_u16_at(slot_va).map(|v| (v as i16) as i64),
+            (JumpTableEntrySize::Byte, true) => {
+                data_idx.read_u8_at(slot_va).map(|v| (v as i8) as i64)
+            }
+            (JumpTableEntrySize::Halfword, false) => {
+                data_idx.read_u16_at(slot_va).map(|v| v as i64)
+            }
+            (JumpTableEntrySize::Halfword, true) => {
+                data_idx.read_u16_at(slot_va).map(|v| (v as i16) as i64)
+            }
         }
     }
 }
@@ -633,12 +663,7 @@ struct JumpTableCtx<'a> {
 /// instruction (LDRB/LDRH with a register index into a known table address),
 /// and the CMP bound.  Table entries are unsigned byte or halfword offsets
 /// (sometimes sign-extended in the ADD) that are added to the ADR target.
-fn recover_arm64_jump_table(
-    br_va: Va,
-    br_index: usize,
-    ctx: &JumpTableCtx,
-    xrefs: &mut Vec<Xref>,
-) {
+fn recover_arm64_jump_table(br_va: Va, br_index: usize, ctx: &JumpTableCtx, xrefs: &mut Vec<Xref>) {
     let Some(pattern) = scan_backward_for_pattern(br_index, ctx) else {
         return;
     };
@@ -647,7 +672,9 @@ fn recover_arm64_jump_table(
     // register overwrites between CMP and BR) over forward-scan state.
     // The forward-scan fallback applies the same window check as ADRP state
     // to avoid picking up a stale CMP from hundreds of instructions ago.
-    let fwd_cmp = ctx.state.get_cmp(pattern.index_reg, br_index, JUMP_TABLE_LOOKBACK);
+    let fwd_cmp = ctx
+        .state
+        .get_cmp(pattern.index_reg, br_index, JUMP_TABLE_LOOKBACK);
     let Some(bound) = pattern.cmp_bound.or(fwd_cmp) else {
         return;
     };
@@ -656,7 +683,8 @@ fn recover_arm64_jump_table(
 
     for k in 0..limit {
         let slot_va = pattern.table_base + (k as u64) * pattern.entry_size.bytes();
-        let Some(offset_val) = add_info.read_offset(pattern.entry_size, ctx.data_idx, slot_va) else {
+        let Some(offset_val) = add_info.read_offset(pattern.entry_size, ctx.data_idx, slot_va)
+        else {
             break;
         };
 
@@ -686,10 +714,7 @@ fn recover_arm64_jump_table(
 /// (ADR+LDRB/H+ADD+BR) is 4 instructions, but the ADRP+ADD that set the
 /// table base and the CMP that set the bound can be several instructions
 /// earlier.
-fn scan_backward_for_pattern(
-    br_index: usize,
-    ctx: &JumpTableCtx,
-) -> Option<JumpTablePattern> {
+fn scan_backward_for_pattern(br_index: usize, ctx: &JumpTableCtx) -> Option<JumpTablePattern> {
     let lookback = br_index.min(JUMP_TABLE_LOOKBACK);
 
     let mut target_base: Option<Va> = None;
@@ -1125,26 +1150,28 @@ mod tests {
         // Data segment at 0x2000 so target 0x2008 is valid.
         static DATA: [u8; 0x100] = [0u8; 0x100];
         let code_seg = fake_seg(0x1000, &CODE);
-        let segs = vec![fake_seg(0x1000, &CODE), Segment {
-            va: Va::new(0x2000),
-            data: unsafe { SegData::new_for_test(&DATA) },
-            executable: false,
-            readable: true,
-            writable: false,
-            byte_scannable: false,
-            mode: DecodeMode::Default,
-            name: "data".to_string(),
-        }];
+        let segs = vec![
+            fake_seg(0x1000, &CODE),
+            Segment {
+                va: Va::new(0x2000),
+                data: unsafe { SegData::new_for_test(&DATA) },
+                executable: false,
+                readable: true,
+                writable: false,
+                byte_scannable: false,
+                mode: DecodeMode::Default,
+                name: "data".to_string(),
+            },
+        ];
 
         let idx = SegmentIndex::build(&segs);
         let didx = SegmentDataIndex::build(&segs);
         let xrefs = scan_adrp(&region_for(&code_seg), &idx, &didx);
 
         // Must emit data_read at LDR VA (0x1004) → 0x2008
-        let dr = xrefs
-            .iter()
-            .find(|x| x.kind == XrefKind::DataRead)
-            .expect("ADRP+LDR with Rt==Rn must emit data_read (regression: state cleared before read)");
+        let dr = xrefs.iter().find(|x| x.kind == XrefKind::DataRead).expect(
+            "ADRP+LDR with Rt==Rn must emit data_read (regression: state cleared before read)",
+        );
         assert_eq!(dr.from, Va::new(0x1004));
         assert_eq!(dr.to, Va::new(0x2008));
 
@@ -1210,7 +1237,10 @@ mod tests {
         };
 
         let code_seg = fake_seg(0x10000, &CODE);
-        let segs = vec![fake_seg(0x10000, &CODE), fake_data_seg(0x20000, &TABLE_DATA)];
+        let segs = vec![
+            fake_seg(0x10000, &CODE),
+            fake_data_seg(0x20000, &TABLE_DATA),
+        ];
 
         let idx = SegmentIndex::build(&segs);
         let didx = SegmentDataIndex::build(&segs);
@@ -1220,14 +1250,20 @@ mod tests {
             .iter()
             .filter(|x| x.kind == XrefKind::Jump && x.from == Va::new(0x1001C))
             .collect();
-        assert_eq!(jt_xrefs.len(), 4, "expected 4 jump table targets, got {jt_xrefs:?}");
+        assert_eq!(
+            jt_xrefs.len(),
+            4,
+            "expected 4 jump table targets, got {jt_xrefs:?}"
+        );
         let targets: Vec<Va> = jt_xrefs.iter().map(|x| x.to).collect();
         assert!(targets.contains(&Va::new(0x10020)));
         assert!(targets.contains(&Va::new(0x10024)));
         assert!(targets.contains(&Va::new(0x10028)));
         assert!(targets.contains(&Va::new(0x1002C)));
         // All should have LocalProp confidence.
-        assert!(jt_xrefs.iter().all(|x| x.confidence == Confidence::LocalProp));
+        assert!(jt_xrefs
+            .iter()
+            .all(|x| x.confidence == Confidence::LocalProp));
     }
 
     /// Jump table recovery should bail when no CMP bound is present.
@@ -1260,7 +1296,10 @@ mod tests {
         };
 
         let code_seg = fake_seg(0x10000, &CODE);
-        let segs = vec![fake_seg(0x10000, &CODE), fake_data_seg(0x20000, &TABLE_DATA)];
+        let segs = vec![
+            fake_seg(0x10000, &CODE),
+            fake_data_seg(0x20000, &TABLE_DATA),
+        ];
 
         let idx = SegmentIndex::build(&segs);
         let didx = SegmentDataIndex::build(&segs);
