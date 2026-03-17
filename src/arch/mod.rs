@@ -1,3 +1,4 @@
+pub mod arm32;
 pub mod arm64;
 pub mod arm64_decode;
 pub(crate) mod x86_64;
@@ -19,7 +20,8 @@ pub(crate) struct ScanRegion<'a> {
     pub data: &'a [u8],
     pub base_va: Va,
     /// Decode mode for this region (Default, Thumb, Arm32).
-    /// Reserved for arm32/Thumb scanners — not used by arm64/x86-64.
+    /// Carried for introspection; the pass dispatcher already selects the
+    /// right scanner based on mode before calling into arch code.
     #[allow(dead_code)]
     pub mode: DecodeMode,
     /// True if the source segment is writable (e.g. .data, .got).

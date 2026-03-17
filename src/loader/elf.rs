@@ -51,6 +51,8 @@ pub(super) fn parse_elf(
         name: String,
         byte_scannable: bool,
         is_code: bool,
+        /// Per-section decode mode (Thumb vs ARM32 for ARM32 ELF; Default otherwise).
+        mode: DecodeMode,
     }
     let mut section_infos: Vec<SectionInfo> = Vec::new();
     for sh in &elf.section_headers {
@@ -68,14 +70,64 @@ pub(super) fn parse_elf(
                 name: name.to_string(),
                 byte_scannable: !NO_SCAN_SECTIONS.contains(&name),
                 is_code: !NON_CODE_SECTIONS.contains(&name),
+                mode: DecodeMode::Default, // filled in below for ARM32
             });
         }
     }
     section_infos.sort_by_key(|s| s.va);
 
-    let mode = if arch == Arch::Arm32 {
-        DecodeMode::Arm32
+    // For ARM32 ELF, assign per-section Thumb vs ARM32 decode mode.
+    // For all other architectures keep DecodeMode::Default.
+    let default_mode = if arch == Arch::Arm32 {
+        // Collect ELF mapping symbols ($t = Thumb, $a = ARM32).
+        // These are local STT_NOTYPE symbols present in non-stripped binaries.
+        let mut map_syms: Vec<(u64, DecodeMode)> = elf
+            .syms
+            .iter()
+            .filter_map(|sym| {
+                elf.strtab.get_at(sym.st_name).and_then(|name| {
+                    // Match bare "$t" / "$a" and indexed variants like "$t.0".
+                    if name == "$t" || name.starts_with("$t.") {
+                        Some((sym.st_value, DecodeMode::Thumb))
+                    } else if name == "$a" || name.starts_with("$a.") {
+                        Some((sym.st_value, DecodeMode::Arm32))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        if !map_syms.is_empty() {
+            map_syms.sort_unstable_by_key(|e| e.0);
+            // Assign each section's mode from the last mapping symbol at or
+            // before its start address.
+            for si in &mut section_infos {
+                let idx = map_syms.partition_point(|e| e.0 <= si.va);
+                si.mode = if idx > 0 {
+                    map_syms[idx - 1].1
+                } else {
+                    DecodeMode::Thumb // default if no mapping symbol precedes
+                };
+            }
+            DecodeMode::Thumb // used for unsectioned LOAD fallback
+        } else {
+            // Stripped binary — use section-name heuristic.
+            // .plt (and .plt.got) are always ARM32 interworking stubs;
+            // everything else is Thumb-2 on modern ARM32 ELF (EABI5).
+            for si in &mut section_infos {
+                si.mode = if si.name == ".plt" || si.name == ".plt.got" {
+                    DecodeMode::Arm32
+                } else {
+                    DecodeMode::Thumb
+                };
+            }
+            DecodeMode::Thumb // fallback for unsectioned LOAD regions
+        }
     } else {
+        for si in &mut section_infos {
+            si.mode = DecodeMode::Default;
+        }
         DecodeMode::Default
     };
 
@@ -141,7 +193,7 @@ pub(super) fn parse_elf(
                         readable: read,
                         writable: write,
                         byte_scannable: sec.byte_scannable,
-                        mode,
+                        mode: sec.mode,
                         name: sec.name.clone(),
                     });
                 }
@@ -156,7 +208,7 @@ pub(super) fn parse_elf(
                         readable: read,
                         writable: write,
                         byte_scannable: false,
-                        mode,
+                        mode: default_mode,
                         name: format!("BSS[{:#x}]", last_end),
                     });
                 }
@@ -181,7 +233,7 @@ pub(super) fn parse_elf(
                     readable: read,
                     writable: write,
                     byte_scannable,
-                    mode,
+                    mode: default_mode,
                     name: format!("LOAD[{:#x}]", ph_va),
                 });
             }
@@ -198,7 +250,7 @@ pub(super) fn parse_elf(
                 readable: read,
                 writable: write,
                 byte_scannable: false,
-                mode,
+                mode: default_mode,
                 name: format!("BSS[{:#x}]", bss_va),
             });
         }

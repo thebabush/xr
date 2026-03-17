@@ -22,6 +22,7 @@ AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
 | PE x86-64 (MSVC) | 8 | 0.561–0.918 | Low end: concrt140.dll (.pdata FPs). 32-bit RVA EH/RTTI invisible to 8-byte scanner |
 | PE ARM64 (MSVC) | 2 | 0.623–0.752 | Limited by data_ptr gaps in ADRP-heavy code |
 | COFF object (x86-64 / x86-32) | — | — | Format newly supported; no ground-truth benchmark yet |
+| ARM32 ELF (Thumb-2 / A32) | — | — | Scanner newly added; no ground-truth benchmark yet |
 
 Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
 
@@ -141,6 +142,7 @@ src/
     dyld.rs                      ← dyld shared cache
   arch/
     mod.rs                       ← byte_scan_pointers, SegmentDataIndex
+    arm32.rs                     ← Thumb-2 + ARM32 (A32) scanners
     arm64.rs                     ← ADRP pair scan, jump table recovery
     arm64_decode.rs              ← pure bitmask ARM64 decoder
     x86_64.rs                    ← x86-64 scanner, jump table recovery

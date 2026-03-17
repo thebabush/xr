@@ -86,6 +86,14 @@ struct Cli {
     #[arg(long, value_parser = Va::parse)]
     ref_end: Option<Va>,
 
+    /// ARM32 decode mode override.
+    /// auto  = per-section heuristic (mapping symbols → section-name fallback).
+    /// thumb = force all executable ARM32 segments to Thumb-2.
+    /// arm   = force all executable ARM32 segments to classic ARM32 (A32).
+    /// Ignored for non-ARM32 binaries.
+    #[arg(long, default_value = "auto")]
+    arm32_mode: Arm32Mode,
+
     /// Enable Rust-specific analysis: extract string literals from binaries.
     /// Scans .rodata for UTF-8 blobs and resolves (ptr, len) pairs to strings.
     #[arg(long)]
@@ -107,6 +115,18 @@ enum OutputFormat {
     Text,
     Jsonl,
     Csv,
+}
+
+/// ARM32 decode-mode override for `--arm32-mode`.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Arm32Mode {
+    /// Per-section heuristic: mapping symbols when present, otherwise
+    /// `.plt` → ARM32, everything else → Thumb.
+    Auto,
+    /// Force all executable ARM32 segments to Thumb-2 mode.
+    Thumb,
+    /// Force all executable ARM32 segments to classic ARM32 (A32) mode.
+    Arm,
 }
 
 /// Scored xref kind filter — the five canonical categories that IDA reports.
@@ -167,7 +187,22 @@ fn main() -> Result<()> {
     let depth = cli.depth;
 
     eprintln!("loading {}...", cli.binary.display());
-    let binary = LoadedBinary::load_with_base(&cli.binary, cli.base.map(Va::raw))?;
+    let mut binary = LoadedBinary::load_with_base(&cli.binary, cli.base.map(Va::raw))?;
+
+    // Apply --arm32-mode override before any scanning.
+    if binary.arch == xr::Arch::Arm32 && cli.arm32_mode != Arm32Mode::Auto {
+        let forced = match cli.arm32_mode {
+            Arm32Mode::Thumb => xr::DecodeMode::Thumb,
+            Arm32Mode::Arm   => xr::DecodeMode::Arm32,
+            Arm32Mode::Auto  => unreachable!(),
+        };
+        for seg in &mut binary.segments {
+            if seg.executable {
+                seg.mode = forced;
+            }
+        }
+    }
+
     eprintln!(
         "arch={:?}  segments={}  entry_points={}",
         binary.arch,

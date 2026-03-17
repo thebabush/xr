@@ -1,3 +1,4 @@
+use crate::arch::arm32;
 use crate::arch::arm64;
 use crate::arch::x86_64;
 use crate::arch::{self, ScanRegion, SegmentDataIndex, SegmentIndex};
@@ -504,12 +505,20 @@ fn scan_shard(
         (Arch::Arm64, DecodeMode::Default, Depth::Paired) => {
             arm64::scan_adrp(&region, ctx.seg_idx, ctx.data_idx)
         }
-        // ARM32 / Thumb — stub for now
-        (Arch::Arm32, _, _)
-        | (Arch::Arm64, DecodeMode::Thumb, _)
-        | (Arch::Arm64, DecodeMode::Arm32, _) => {
-            vec![] // TODO: arm32 pass
+        // ARM32 / Thumb
+        (Arch::Arm32, DecodeMode::Thumb, Depth::Linear | Depth::Paired) => {
+            arm32::scan_thumb(&region, ctx.seg_idx)
         }
+        (Arch::Arm32, DecodeMode::Arm32, Depth::Linear | Depth::Paired) => {
+            arm32::scan_arm32(&region, ctx.seg_idx)
+        }
+        // Default mode on an Arm32 binary shouldn't happen after the loader
+        // sets per-section modes, but fall back to Thumb (the common case).
+        (Arch::Arm32, DecodeMode::Default, Depth::Linear | Depth::Paired) => {
+            arm32::scan_thumb(&region, ctx.seg_idx)
+        }
+        // Arm64 in Thumb/Arm32 mode is a loader bug — return empty.
+        (Arch::Arm64, DecodeMode::Thumb | DecodeMode::Arm32, _) => vec![],
         // x86-64
         (Arch::X86_64, _, Depth::Linear) => {
             x86_64::scan_linear(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
@@ -517,10 +526,8 @@ fn scan_shard(
         (Arch::X86_64, _, Depth::Paired) => {
             x86_64::scan_with_prop(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
         }
-        // x86 32-bit — stub
-        (Arch::X86, _, _) => {
-            vec![] // TODO: x86 32-bit pass
-        }
+        // x86 32-bit — not yet implemented
+        (Arch::X86, _, _) => vec![],
         (Arch::Unknown, _, _) => vec![],
         // ByteScan never generates code shards — return empty rather than
         // panicking, in case a future refactor accidentally routes here.

@@ -11,8 +11,7 @@
 //! follows, resolve the full address. Also handles BLR/BR where the target
 //! register was set by an ADRP+ADD.
 //!
-//! Thumb / ARM32: not implemented here — stub returns empty. Will be a separate
-//! pass in arm32.rs when needed.
+//! Thumb / ARM32: implemented in `arch/arm32.rs`.
 
 use super::{ScanRegion, SegmentDataIndex, SegmentIndex};
 use crate::arch::arm64_decode::Arm64Insn;
