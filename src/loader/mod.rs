@@ -1,3 +1,4 @@
+mod coff;
 mod dyld;
 mod elf;
 mod macho;
@@ -443,6 +444,7 @@ fn parse_binary(
             Err(anyhow!("fat (universal) Mach-O binaries are not supported; extract the desired arch slice first (e.g. with `lipo -extract`)"))
         }
         Object::PE(ref pe_obj) => pe::parse_pe(bytes, pe_obj, bss_bufs),
+        Object::COFF(ref coff_obj) => coff::parse_coff(bytes, coff_obj, bss_bufs),
         Object::Unknown(_) => {
             // Safety: `bytes` is the mmap kept alive by `LoadedBinary::_mmap`.
             let seg = Segment {

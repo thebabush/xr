@@ -3,24 +3,25 @@
 ## Goal
 
 Build `xr`: a standalone Rust crate for ultra-fast, parallel cross-reference
-extraction from stripped binaries (ELF, Mach-O, PE). Benchmarked against IDA Pro
-ground-truth xrefs. Maximise F1 score across all xref kinds.
+extraction from stripped binaries (ELF, Mach-O, PE). Maximise F1 score across
+all xref kinds.
 
 ---
 
 ## Current Scores (Paired depth)
 
-Tested against IDA Pro ground truth on 26 binaries across ELF (x86-64,
+Tested against ground truth on 26 binaries across ELF (x86-64,
 AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
 
-| Category | F1 range | Notes |
-|----------|----------|-------|
-| ELF x86-64 | 0.87–0.97 | Best on statically linked, lower on PIE with many extern calls |
-| ELF ARM64 | 0.84–0.95 | Lower end from unresolved ADRP pairs and jump tables |
-| Mach-O ARM64 | 0.98 | Fixup chain parsing recovers most data_ptr |
-| PE x86-64 (Rust/MinGW) | 0.89–0.99 | .pdata + UNWIND_INFO parsing very effective |
-| PE x86-64 (MSVC C++) | 0.56–0.87 | Limited by 32-bit RVA EH/RTTI metadata; low end from .pdata FPs on concrt140.dll |
-| PE ARM64 | 0.62–0.75 | Limited by data_ptr gaps |
+| Category | n | F1 range | Notes |
+|----------|----|----------|-------|
+| ELF x86-64 | 8 | 0.867–0.969 | Low end: libharlem-shake.so (PLT call FNs). High: curl-amd64 (static, fully resolved) |
+| ELF ARM64 | 5 | 0.840–0.952 | Low end: libziggy.so / libssl3 (unresolved ADRP pairs, jump table FNs) |
+| Mach-O ARM64 | 1 | 0.982 | Fixup chain parsing recovers most data_ptr |
+| PE x86-64 (MinGW/Rust) | 2 | 0.954–0.995 | .pdata + UNWIND_INFO very effective; win32kbase_rs.sys near-perfect |
+| PE x86-64 (MSVC) | 8 | 0.561–0.918 | Low end: concrt140.dll (.pdata FPs). 32-bit RVA EH/RTTI invisible to 8-byte scanner |
+| PE ARM64 (MSVC) | 2 | 0.623–0.752 | Limited by data_ptr gaps in ADRP-heavy code |
+| COFF object (x86-64 / x86-32) | — | — | Format newly supported; no ground-truth benchmark yet |
 
 Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
 
@@ -69,7 +70,7 @@ Each binary is split into `Segment` structs with:
 - `.data.rel.ro` / `.data.rel.ro.local` → `byte_scannable=false`
   (relocation tables produce ~5–29x FP:TP ratio without reloc context)
 - PIE ELFs (ET_DYN with first PT_LOAD at p_vaddr==0) are rebased to `0x0040_0000`
-  to match IDA's default load address
+  (the default load address used by common disassemblers)
 
 ### Xref kinds
 
@@ -93,9 +94,8 @@ Strong typing throughout:
 ### GOT-indirect call/jump resolution
 
 xr emits `to=got_slot_va` (the real address the CPU dereferences) for
-GOT-indirect calls/jumps, rather than trying to replicate IDA's fragile
-synthetic extern VA assignment. The benchmark normalizes IDA's extern-target
-xrefs back to GOT slot VAs by decoding instruction bytes at each `from`.
+GOT-indirect calls/jumps. The benchmark normalizes extern-target xrefs back
+to GOT slot VAs by decoding instruction bytes at each `from`.
 
 ### Relocation-derived data_ptr recovery
 
@@ -137,6 +137,7 @@ src/
     elf.rs                       ← ELF parsing, GOT slots, reloc pointers
     macho.rs                     ← Mach-O parsing, LC_DYLD_CHAINED_FIXUPS
     pe.rs                        ← PE parsing, .pdata, IAT, base relocations
+    coff.rs                      ← COFF object file parsing (sequential VA layout)
     dyld.rs                      ← dyld shared cache
   arch/
     mod.rs                       ← byte_scan_pointers, SegmentDataIndex
@@ -144,11 +145,11 @@ src/
     arm64_decode.rs              ← pure bitmask ARM64 decoder
     x86_64.rs                    ← x86-64 scanner, jump table recovery
   bin/
-    benchmark.rs                 ← benchmark vs IDA ground truth
+    benchmark.rs                 ← benchmark vs ground truth
     fuzz_arm64.rs                ← ARM64 decoder fuzzer
 
 scripts/
-  ida_extract_xrefs_binary.py    ← IDA Pro ground-truth extraction
+  ida_extract_xrefs_binary.py    ← ground-truth extraction script
   batch_extract_xrefs.sh         ← batch ground truth for all testcases
   score_all.sh                   ← run benchmark on all testcases
   eval.py                        ← quick eval without rebuild
@@ -167,14 +168,14 @@ register set outside the lookback window. Diminishing returns.
 
 ### ARM64 data_ptr FNs
 
-- **ADD-VA mismatch**: IDA records xref at ADD VA, xr at ADRP VA.
+- **ADD-VA mismatch**: ground truth records xref at ADD VA, xr at ADRP VA.
   Re-enabling ADD-VA gives +6496 TPs / +6981 FPs (net negative).
 - **LDR through unresolved registers**: needs interprocedural data flow.
 - **Byte-scan pointers to exec segment**: suppressed (10–14x FP:TP ratio).
 
-### x86-64 jump FPs (~5784 on curl-amd64)
+### x86-64 jump FPs (~5807 on curl-amd64)
 
-~4881 in a 153KB dead zone within `.text` where IDA records only 13 xrefs.
+~4881 in a 153KB dead zone within `.text` where ground truth records only 13 xrefs.
 FDE filtering would remove ~5780 FPs but add ~4946 FNs (net +0.002 F1).
 
 ### PE MSVC C++ EH/RTTI data_ptr FNs
@@ -186,7 +187,7 @@ deep MSVC EH metadata parsing.
 
 ### PLT call resolution (x86-64 ELF)
 
-`CALL rel32` through PLT stubs → IDA records `to=extern_va`, xr records
+`CALL rel32` through PLT stubs → ground truth records `to=extern_va`, xr records
 `to=PLT_stub_va`. Causes ~711 call FNs on libharlem-shake.so.
 
 ### data_write FNs
@@ -222,9 +223,9 @@ interprocedural data flow.
 | Fix | Why abandoned |
 |-----|---------------|
 | Re-enable ADD-VA data_ptr | +6496 TPs but +6981 FPs; net F1 +0.001 |
-| .pdata xrefs with field-offset `from` | IDA uses entry start VA, not field offsets. 0 TP. |
+| .pdata xrefs with field-offset `from` | Ground truth uses entry start VA, not field offsets. 0 TP. |
 | Blind 32-bit RVA scan of .rdata | 14.5% precision — too many random u32 matches |
 | UNWIND_INFO scope table parsing | Layout varies by handler type. 2937 FP. Handler RVA alone is 100% precise. |
 | FDE/`.eh_frame` coverage filter | −5780 FPs but +4946 FNs; net +0.002 F1 |
 | Forward register tracker for data_write | F1 0.407 vs 0.541 — register reuse causes massive FPs |
-| IDA extern VA replication algorithm | Binary-dependent layout; 5184 FP on blackcat.elf |
+| Extern VA replication algorithm | Binary-dependent layout; 5184 FP on blackcat.elf |

@@ -83,8 +83,12 @@ See [docs/STATUS.md](docs/STATUS.md) for architecture details and known gaps.
 - ELF (x86-64, AArch64), including PIE (ET_DYN)
 - Single-arch Mach-O (x86-64, ARM64). Fat binaries require `lipo -extract` first
 - PE / COFF (x86-64, ARM64)
+- COFF object files / `.o` / `.obj` (x86-64, ARM64, x86-32, ARM32)
 - Apple dyld shared cache
 - Raw flat binary (treated as single executable segment)
+
+COFF object files have no fixed load address; xr assigns VAs by stacking
+sections sequentially from 0 (matching the convention used by common disassemblers).
 
 x86-32 and ARM32 binaries are loaded but not scanned (architecture stubs only).
 
