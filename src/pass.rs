@@ -295,6 +295,7 @@ impl<'a> XrefPass<'a> {
             seg_idx: &seg_idx,
             data_idx: &data_idx,
             got_slots: &self.binary.got_slots,
+            pie_base: self.binary.pie_base,
         };
 
         // Cancellation flag: set by the drain thread when on_batch returns Break.
@@ -485,6 +486,11 @@ struct ScanCtx<'a> {
     data_idx: &'a SegmentDataIndex<'a>,
     /// Known GOT slot VAs (from `LoadedBinary::got_slots`).
     got_slots: &'a rustc_hash::FxHashSet<Va>,
+    /// PIE rebase offset applied to this binary's segments.
+    /// Zero for non-PIE binaries and position-dependent executables.
+    /// Forwarded to architecture scanners that need it (e.g. ARM32 Thumb
+    /// LDR-literal pointer chaining).
+    pie_base: u64,
 }
 
 fn scan_shard(
@@ -507,7 +513,7 @@ fn scan_shard(
         }
         // ARM32 / Thumb
         (Arch::Arm32, DecodeMode::Thumb, Depth::Linear | Depth::Paired) => {
-            arm32::scan_thumb(&region, ctx.seg_idx)
+            arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base)
         }
         (Arch::Arm32, DecodeMode::Arm32, Depth::Linear | Depth::Paired) => {
             arm32::scan_arm32(&region, ctx.seg_idx)
@@ -515,7 +521,7 @@ fn scan_shard(
         // Default mode on an Arm32 binary shouldn't happen after the loader
         // sets per-section modes, but fall back to Thumb (the common case).
         (Arch::Arm32, DecodeMode::Default, Depth::Linear | Depth::Paired) => {
-            arm32::scan_thumb(&region, ctx.seg_idx)
+            arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base)
         }
         // Arm64 in Thumb/Arm32 mode is a loader bug — return empty.
         (Arch::Arm64, DecodeMode::Thumb | DecodeMode::Arm32, _) => vec![],

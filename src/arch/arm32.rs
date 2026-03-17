@@ -22,14 +22,27 @@
 //! 16-bit instructions decoded:
 //! - `B` T1 conditional `1101 cond imm8` — Jump
 //! - `B` T2 unconditional `11100 imm11` — Jump
-//! - `LDR` T1 literal `01001 Rt imm8` — DataRead
+//! - `LDR` T1 literal `01001 Rt imm8` — DataRead + state capture
+//! - `ADD Rt, PC` `0100 0100 D 1111 Rdn` — resolves pending LDR state → DataPointer
 //!
 //! 32-bit instructions decoded (first halfword `& 0xF800 == 0xF000`):
 //! - `BL`      hw2 `& 0xD000 == 0xD000` — Call
 //! - `BLX`     hw2 `& 0xD000 == 0xC000` — Call (to ARM32)
 //! - `B.W`     hw2 `& 0xD000 == 0x9000` — Jump
 //! - `B.cond.W` hw2 `& 0xD000 == 0x8000` — Jump
-//! - `LDR.W` literal `hw1 & 0xFF7F == 0xF85F` — DataRead
+//! - `LDR.W` literal `hw1 & 0xFF7F == 0xF85F` — DataRead + state capture
+//!
+//! ## Thumb LDR + ADD PC pair (PIC GOT-pointer idiom)
+//!
+//! `LDR Rt, [PC, #imm]` loads a PC-relative offset `V` from the literal pool;
+//! a later `ADD Rt, PC` resolves the final address as `resolved = V + (ADD_va + 4)`.
+//! Register state is tracked across non-adjacent instruction pairs (analogous
+//! to the ARM64 ADRP + ADD/LDR scanner).  IDA records `data_ptr` from the LDR
+//! instruction address, the ADD instruction address, and the literal pool word
+//! address, all pointing to `resolved`.
+//!
+//! State is cleared on: a new `LDR Rt` (overwrite), unconditional `B T2`
+//! (function boundary), and `BL`/`BLX` (clears R0–R3 per ARM ABI).
 
 use crate::arch::{SegmentIndex, ScanRegion};
 use crate::va::Va;
@@ -163,11 +176,66 @@ fn a32_signext24(imm24: u32) -> i64 {
 
 // ── Thumb-2 scanner ───────────────────────────────────────────────────────────
 
+/// Per-register state for the `LDR Rt,[PC,#N]` → `ADD Rt, PC` pair detector.
+#[derive(Clone, Copy)]
+struct LdrState {
+    /// Address of the `LDR` instruction that loaded the pool offset.
+    ldr_va: Va,
+    /// Address of the literal pool word in the binary.
+    pool_va: Va,
+    /// Raw 32-bit value stored at `pool_va` (the PC-relative offset `V`).
+    pool_word: u32,
+}
+
+/// Emit DataPointer xrefs from all three addresses that IDA records for a
+/// resolved LDR+ADD PC pair: LDR instruction, ADD instruction, and pool word.
+#[inline]
+fn emit_ldr_add_pair(
+    xrefs: &mut Vec<Xref>,
+    st: LdrState,
+    add_va: Va,
+    seg_idx: &SegmentIndex,
+) {
+    // PC of the ADD instruction = ADD_va + 4 (Thumb: inst + 4).
+    let resolved = (st.pool_word as u64).wrapping_add(add_va.raw()).wrapping_add(4);
+    let resolved_va = Va::new(resolved);
+    if seg_idx.contains(resolved_va) {
+        xrefs.push(xref(st.ldr_va, resolved, XrefKind::DataPointer));
+        xrefs.push(xref(add_va, resolved, XrefKind::DataPointer));
+        xrefs.push(xref(st.pool_va, resolved, XrefKind::DataPointer));
+    }
+}
+
 /// Linear scan of a Thumb-2 code region (mixed 16/32-bit halfwords).
-pub(crate) fn scan_thumb(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xref> {
+///
+/// `pie_base` is the rebase delta applied to this binary's segments; it is
+/// passed through for future use (currently the LDR+ADD pair resolution
+/// is pie-base-agnostic because the ADD PC operand already carries the
+/// rebased address).
+pub(crate) fn scan_thumb(
+    region: &ScanRegion,
+    seg_idx: &SegmentIndex,
+    _pie_base: u64,
+) -> Vec<Xref> {
     let data = region.data;
     let base = region.base_va;
     let mut xrefs = Vec::new();
+
+    // Per-register LDR state for the LDR + ADD PC pair detector.
+    // Index = register number (0–15).  R15 (PC) is never a destination.
+    let mut ldr_st: [Option<LdrState>; 16] = [None; 16];
+
+    // Helper: read a pool word from the current region.
+    let read_pool = |pool_va: u64| -> Option<u32> {
+        let off = pool_va as i64 - base.raw() as i64;
+        if off < 0 {
+            return None;
+        }
+        let off = off as usize;
+        data.get(off..off + 4)
+            .and_then(|s| s.try_into().ok())
+            .map(u32::from_le_bytes)
+    };
 
     let mut i = 0usize;
     while i + 1 < data.len() {
@@ -186,7 +254,12 @@ pub(crate) fn scan_thumb(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
                 // BL / BLX / B.W / B.cond.W — classified by bits[15:12] of hw2.
                 match hw2 & 0xD000 {
                     0xD000 => {
-                        // BL T1 — call to Thumb
+                        // BL T1 — call to Thumb.
+                        // ARM ABI: clobbers R0–R3; clear their LDR state.
+                        ldr_st[0] = None;
+                        ldr_st[1] = None;
+                        ldr_st[2] = None;
+                        ldr_st[3] = None;
                         let target = thumb_bl_target(pc.raw(), hw1, hw2, false);
                         if seg_idx.is_exec(Va::new(target)) {
                             xrefs.push(xref(pc, target, XrefKind::Call));
@@ -194,21 +267,26 @@ pub(crate) fn scan_thumb(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
                     }
                     0xC000 => {
                         // BLX T2 — call to ARM32; target must be 4-byte aligned.
+                        ldr_st[0] = None;
+                        ldr_st[1] = None;
+                        ldr_st[2] = None;
+                        ldr_st[3] = None;
                         let target = thumb_bl_target(pc.raw(), hw1, hw2, true);
                         if seg_idx.is_exec(Va::new(target)) {
                             xrefs.push(xref(pc, target, XrefKind::Call));
                         }
                     }
                     0x9000 => {
-                        // B.W T4 — unconditional jump
+                        // B.W T4 — unconditional wide jump; treat as function
+                        // boundary and clear all LDR state.
+                        ldr_st = [None; 16];
                         let target = thumb_bl_target(pc.raw(), hw1, hw2, false);
                         if seg_idx.is_exec(Va::new(target)) {
                             xrefs.push(xref(pc, target, XrefKind::Jump));
                         }
                     }
                     0x8000 => {
-                        // B.cond.W T3 — conditional jump
-                        // cond lives in hw1 bits[9:6]; 0xE/0xF are reserved.
+                        // B.cond.W T3 — conditional jump (not a boundary).
                         let cond = (hw1 >> 6) & 0xF;
                         if cond != 0xE && cond != 0xF {
                             let target = thumb_bcond_w_target(pc.raw(), hw1, hw2);
@@ -220,30 +298,38 @@ pub(crate) fn scan_thumb(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
                     _ => {}
                 }
             } else if hw1 & 0xFF7F == 0xF85F {
-                // LDR.W T2 literal: `11111000 U101 1111` — DataRead.
-                // U = bit[7] of hw1; imm12 from hw2 bits[11:0].
+                // LDR.W T2 literal: `11111000 U101 1111`.
+                // U = bit[7] of hw1; imm12 = hw2[11:0]; Rt = hw2[15:12].
+                let rt = ((hw2 >> 12) & 0xF) as usize;
                 let u = (hw1 >> 7) & 1;
                 let imm12 = (hw2 & 0xFFF) as u64;
-                // PC is aligned to 4 bytes for literal loads.
                 let align_pc = (pc.raw() + 4) & !3u64;
-                let target = if u != 0 {
+                let pool_va = if u != 0 {
                     align_pc + imm12
                 } else {
                     align_pc.wrapping_sub(imm12)
                 };
-                if seg_idx.contains(Va::new(target)) {
-                    xrefs.push(xref(pc, target, XrefKind::DataRead));
+                if seg_idx.contains(Va::new(pool_va)) {
+                    xrefs.push(xref(pc, pool_va, XrefKind::DataRead));
+                }
+                // Capture LDR state for the ADD Rt, PC pair detector.
+                if rt < 15 {
+                    ldr_st[rt] = read_pool(pool_va).map(|w| LdrState {
+                        ldr_va: pc,
+                        pool_va: Va::new(pool_va),
+                        pool_word: w,
+                    });
                 }
             }
-            // All other 32-bit instructions: advance past them (i already incremented).
+            // All other 32-bit instructions: advance past them.
         } else {
             i += 2;
-            // 16-bit instruction.
+            // ── 16-bit instructions ───────────────────────────────────────
             if hw1 & 0xF000 == 0xD000 {
                 // B T1 — conditional branch: `1101 cond imm8`.
                 let cond = (hw1 >> 8) & 0xF;
                 if cond != 0xE && cond != 0xF {
-                    let imm8 = (hw1 & 0xFF) as i8; // sign-extend 8 bits
+                    let imm8 = (hw1 & 0xFF) as i8;
                     let offset = (imm8 as i32) * 2;
                     let target = (pc.raw() as i64 + 4 + offset as i64) as u64;
                     if seg_idx.is_exec(Va::new(target)) {
@@ -252,6 +338,8 @@ pub(crate) fn scan_thumb(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
                 }
             } else if hw1 & 0xF800 == 0xE000 {
                 // B T2 — unconditional branch: `11100 imm11`.
+                // Treat as a function boundary: clear all LDR state.
+                ldr_st = [None; 16];
                 let imm11 = hw1 & 0x7FF;
                 let offset = thumb_signext11(imm11) * 2;
                 let target = (pc.raw() as i64 + 4 + offset) as u64;
@@ -260,12 +348,29 @@ pub(crate) fn scan_thumb(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
                 }
             } else if hw1 & 0xF800 == 0x4800 {
                 // LDR T1 — PC-relative literal: `01001 Rt imm8`.
-                // Effective address = Align(PC, 4) + imm8 * 4.
+                // pool = Align(PC + 4, 4) + imm8 * 4.
+                let rt = ((hw1 >> 8) & 7) as usize;
                 let imm8 = (hw1 & 0xFF) as u64;
                 let align_pc = (pc.raw() + 4) & !3u64;
-                let target = align_pc + imm8 * 4;
-                if seg_idx.contains(Va::new(target)) {
-                    xrefs.push(xref(pc, target, XrefKind::DataRead));
+                let pool_va = align_pc + imm8 * 4;
+                if seg_idx.contains(Va::new(pool_va)) {
+                    xrefs.push(xref(pc, pool_va, XrefKind::DataRead));
+                }
+                // Capture state for the ADD Rt, PC pair detector.
+                ldr_st[rt] = read_pool(pool_va).map(|w| LdrState {
+                    ldr_va: pc,
+                    pool_va: Va::new(pool_va),
+                    pool_word: w,
+                });
+            } else if (hw1 & 0xFF78) == 0x4478 {
+                // ADD Rt, PC — T2 high-register: `0100 0100 D 1111 Rdn`.
+                // Rt = {D, Rdn} = bit[7] combined with bits[2:0].
+                // Excludes ADD PC, PC (Rt == 15).
+                let rt = ((hw1 & 7) | ((hw1 & 0x80) >> 4)) as usize;
+                if rt < 15 {
+                    if let Some(st) = ldr_st[rt].take() {
+                        emit_ldr_add_pair(&mut xrefs, st, pc, seg_idx);
+                    }
                 }
             }
             // All other 16-bit instructions: already advanced, nothing to emit.
@@ -465,7 +570,7 @@ mod tests {
         let binary = LoadedBinary::from_segments(Arch::Arm32, vec![seg]);
         let seg_idx = SegmentIndex::build(&binary.segments);
         let region = ScanRegion::new(&binary.segments[0], Va::new(0x1000), Va::new(0x1010));
-        let xrefs = scan_thumb(&region, &seg_idx);
+        let xrefs = scan_thumb(&region, &seg_idx, 0);
         assert_eq!(xrefs.len(), 1);
         assert_eq!(xrefs[0].from, Va::new(0x1000));
         assert_eq!(xrefs[0].to, Va::new(0x1008));
@@ -480,7 +585,7 @@ mod tests {
         let binary = LoadedBinary::from_segments(Arch::Arm32, vec![seg]);
         let seg_idx = SegmentIndex::build(&binary.segments);
         let region = ScanRegion::new(&binary.segments[0], Va::new(0x1000), Va::new(0x1010));
-        let xrefs = scan_thumb(&region, &seg_idx);
+        let xrefs = scan_thumb(&region, &seg_idx, 0);
         assert_eq!(xrefs.len(), 1);
         assert_eq!(xrefs[0].from, Va::new(0x1000));
         assert_eq!(xrefs[0].to, Va::new(0x100C));
@@ -504,7 +609,7 @@ mod tests {
         let binary = LoadedBinary::from_segments(Arch::Arm32, vec![seg]);
         let seg_idx = SegmentIndex::build(&binary.segments);
         let region = ScanRegion::new(&binary.segments[0], Va::new(0x1000), Va::new(0x1014));
-        let xrefs = scan_thumb(&region, &seg_idx);
+        let xrefs = scan_thumb(&region, &seg_idx, 0);
         assert!(!xrefs.is_empty(), "expected at least one BL xref");
         let bl = xrefs.iter().find(|x| x.kind == XrefKind::Call).unwrap();
         assert_eq!(bl.from, Va::new(0x1000));
@@ -520,7 +625,7 @@ mod tests {
         let binary = LoadedBinary::from_segments(Arch::Arm32, vec![seg]);
         let seg_idx = SegmentIndex::build(&binary.segments);
         let region = ScanRegion::new(&binary.segments[0], Va::new(0x1000), Va::new(0x1010));
-        let xrefs = scan_thumb(&region, &seg_idx);
+        let xrefs = scan_thumb(&region, &seg_idx, 0);
         assert_eq!(xrefs.len(), 1);
         assert_eq!(xrefs[0].from, Va::new(0x1000));
         assert_eq!(xrefs[0].to, Va::new(0x1008));
