@@ -22,7 +22,9 @@ AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
 | PE x86-64 (MSVC) | 8 | 0.561–0.918 | Low end: concrt140.dll (.pdata FPs). 32-bit RVA EH/RTTI invisible to 8-byte scanner |
 | PE ARM64 (MSVC) | 2 | 0.623–0.752 | Limited by data_ptr gaps in ADRP-heavy code |
 | COFF object (x86-64 / x86-32) | — | — | Format newly supported; no ground-truth benchmark yet |
-| ARM32 ELF (Thumb-2 / A32) | — | — | Scanner newly added; no ground-truth benchmark yet |
+| ARM32 ELF armel (A32) | 4 | 0.641–0.679 | call prec ≥0.999; recall limited by data_ptr (0 TP — no ARM32 reloc extraction yet) |
+| ARM32 ELF armhf (Thumb-2) | 2 | 0.565–0.590 | call prec ≥0.998; jump FPs from literal-pool bytes decoded as branches |
+| ARM32 ELF (Android, mixed) | 1 | 0.321 | Heavy intra-section ARM↔Thumb interleaving causes jump FPs; calls still F1=0.932 |
 
 Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
 
@@ -72,6 +74,11 @@ Each binary is split into `Segment` structs with:
   (relocation tables produce ~5–29x FP:TP ratio without reloc context)
 - PIE ELFs (ET_DYN with first PT_LOAD at p_vaddr==0) are rebased to `0x0040_0000`
   (the default load address used by common disassemblers)
+- ARM32 ELF: per-section Thumb/A32 mode from ELF mapping symbols (`$t`/`$a`)
+  when present; otherwise each executable section is probed — if its first 4
+  bytes form a LE u32 with top nibble `0xE` (ARM32 "always" condition) it is
+  decoded as A32, otherwise Thumb.  Correctly distinguishes armhf (`.text`=Thumb,
+  `.plt`/`.init`=A32) from armel (all sections A32) without mapping symbols.
 
 ### Xref kinds
 
@@ -192,6 +199,20 @@ deep MSVC EH metadata parsing.
 `CALL rel32` through PLT stubs → ground truth records `to=extern_va`, xr records
 `to=PLT_stub_va`. Causes ~711 call FNs on libharlem-shake.so.
 
+### ARM32 jump FPs from literal pools (~259k on libamp.so)
+
+Thumb-2 code sections embed literal pool data between functions. The linear
+scanner treats these bytes as instructions, and 16-bit values in `0xE000–0xE7FF`
+match the `B T2` (unconditional branch) encoding, producing spurious jumps.
+Intra-section ARM↔Thumb interleaving (no mapping symbols, stripped Android
+binary) compounds the problem. The only general fix is mapping-symbol-aware or
+CFG-guided disassembly.
+
+### ARM32 data_ptr = 0 TP
+
+No relocation table parsing for ARM32 ELF yet (`.rel.dyn` / RELATIVE and ABS32
+relocations). All data_ptr xrefs in ARM32 ELF come only from byte-scan.
+
 ### data_write FNs
 
 All register-based stores where the base register was set far earlier
@@ -206,6 +227,7 @@ interprocedural data flow.
 
 | Fix | Impact | Notes |
 |-----|--------|-------|
+| ARM32 section-probe mode detection | armel binaries 0.000→0.641–0.679 | Top-nibble probe replaces name heuristic; correctly classifies armel (A32) vs armhf (Thumb) |
 | GOT slot VA approach | blackcat call F1 0.644→0.964 | Emit to=got_slot_va, normalize in benchmark |
 | ELF reloc data_ptr | +24k TPs across all PIE ELFs | R_*_RELATIVE + R_*_64/ABS64 |
 | Mach-O fixup chain parsing | hello.aarch64 F1 0.946→0.980 | Formats 2, 6, 1, 9, 12 |

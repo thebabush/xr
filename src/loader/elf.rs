@@ -4,6 +4,28 @@ use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
 
+/// Probe the first four bytes of an executable section to detect ARM32 vs Thumb.
+///
+/// ARM32 instructions encode a condition code in bits\[31:28\].  The "always"
+/// condition (AL = 0xE) covers almost every non-conditional instruction and
+/// appears as top nibble `0xE` in the little-endian 32-bit word.  Thumb
+/// prologues (`PUSH`, `PUSH.W`, `LDR` literal, etc.) never produce a top
+/// nibble of `0xE` when the first four bytes are read as a LE `u32`.
+///
+/// Returns `Arm32` if the top nibble is `0xE`, `Thumb` otherwise.
+/// Falls back to `Thumb` when fewer than four bytes are available.
+fn probe_arm32_section_mode(file: &[u8], offset: usize, size: usize) -> DecodeMode {
+    if size < 4 || offset + 4 > file.len() {
+        return DecodeMode::Thumb;
+    }
+    let word = u32::from_le_bytes(file[offset..offset + 4].try_into().unwrap());
+    if word >> 28 == 0xE {
+        DecodeMode::Arm32
+    } else {
+        DecodeMode::Thumb
+    }
+}
+
 /// Default PIE base for ET_DYN ELF binaries whose lowest PT_LOAD has `p_vaddr == 0`.
 /// Matches the traditional Linux x86-64 / AArch64 PIE base and IDA default.
 const DEFAULT_PIE_BASE: u64 = 0x0040_0000;
@@ -112,15 +134,20 @@ pub(super) fn parse_elf(
             }
             DecodeMode::Thumb // used for unsectioned LOAD fallback
         } else {
-            // Stripped binary — use section-name heuristic.
-            // .plt (and .plt.got) are always ARM32 interworking stubs;
-            // everything else is Thumb-2 on modern ARM32 ELF (EABI5).
+            // Stripped binary — probe the first 4 bytes of each executable
+            // section to determine Thumb vs ARM32 mode.
+            //
+            // ARM32 instructions always encode a condition code in bits[31:28].
+            // For "always-execute" (AL = 0b1110 = 0xE), which covers virtually
+            // all non-conditional instructions, the top nibble of the LE u32 is
+            // 0xE.  Thumb code prologues (PUSH, PUSH.W, LDR literal) never have
+            // a top nibble of 0xE when read as a four-byte LE word.
+            //
+            // This correctly classifies:
+            //   armel (soft-float):  .text / .init / .plt → ARM32
+            //   armhf (hard-float):  .init / .plt → ARM32, .text → Thumb
             for si in &mut section_infos {
-                si.mode = if si.name == ".plt" || si.name == ".plt.got" {
-                    DecodeMode::Arm32
-                } else {
-                    DecodeMode::Thumb
-                };
+                si.mode = probe_arm32_section_mode(bytes, si.file_offset, si.file_size);
             }
             DecodeMode::Thumb // fallback for unsectioned LOAD regions
         }
