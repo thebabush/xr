@@ -9,10 +9,16 @@
 //! - `B`   `cond 1010 imm24` — Jump
 //! - `BL`  `cond 1011 imm24` — Call
 //! - `BLX` `1111 101H imm24` — Call (unconditional, crosses to Thumb)
-//! - `LDR` PC-relative `cond 0101 U001 1111 Rt imm12` — DataRead
-//! - `LDR Rd,[PC,#N]; ADD Rd,PC,Rd` pair — DataPointer to resolved address
-//!   (classic ARM32 PIC GOT-pointer idiom; the literal pool holds a
-//!   PC-relative offset V; `resolved = (LDR_va + 12) + V`)
+//! - `LDR` PC-relative `cond 0101 U001 1111 Rt imm12` — DataRead + state capture
+//! - `ADD Rd,PC,Rd` (any cond, S=0, no shift) — resolves pending LDR state → DataPointer
+//!
+//! ## A32 LDR + ADD PC pair (PIC GOT-pointer idiom)
+//!
+//! Register-state tracking (adjacent and non-adjacent variants):
+//! `LDR Rd,[PC,#N]` loads offset `V` from a literal pool; `ADD Rd,PC,Rd`
+//! later resolves `resolved = V + (ADD_va + 8)`.  Identical mechanism to the
+//! Thumb state machine.  State is cleared on unconditional `B`, `BL`, and
+//! `BLX` (clears R0–R3).
 //!
 //! # Thumb-2 mode
 //!
@@ -51,10 +57,29 @@ use crate::xref::{Confidence, Xref, XrefKind};
 // ── ARM32 (A32) scanner ───────────────────────────────────────────────────────
 
 /// Linear scan of a 4-byte-aligned ARM32 code region.
+///
+/// Implements a register-state tracker for the `LDR Rd,[PC,#N]; ADD Rd,PC,Rd`
+/// PIC GOT-pointer idiom (adjacent and non-adjacent variants).  The logic is
+/// symmetric with the Thumb `scan_thumb` state machine.
 pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xref> {
     let data = region.data;
     let base = region.base_va;
     let mut xrefs = Vec::new();
+
+    // Per-register LDR state.  Filled by `LDR Rd,[PC,#N]`, consumed by
+    // `ADD Rd,PC,Rd`.
+    let mut ldr_st: [Option<LdrState>; 16] = [None; 16];
+
+    let read_pool = |pool_va: u64| -> Option<u32> {
+        let off = pool_va as i64 - base.raw() as i64;
+        if off < 0 {
+            return None;
+        }
+        let off = off as usize;
+        data.get(off..off + 4)
+            .and_then(|s| s.try_into().ok())
+            .map(u32::from_le_bytes)
+    };
 
     let mut i = 0usize;
     while i + 3 < data.len() {
@@ -62,37 +87,67 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
         let word = u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
         i += 4;
 
+        // ── ADD Rd, PC, Rd ────────────────────────────────────────────────
+        // `cond 0000_1000_1111_Rd 0000_0000_Rd` — consumes LDR state.
+        // Mask  0x0FFF_0FF0 == 0x008F_0000; bits[15:12] == bits[3:0] == Rd.
+        let rd_bits = (word >> 12) & 0xF;
+        if (word & 0x0FFF_0FF0) == 0x008F_0000
+            && rd_bits == (word & 0xF)
+            && rd_bits != 15
+        {
+            let rd = rd_bits as usize;
+            if let Some(st) = ldr_st[rd].take() {
+                // PC of ADD = add_va + 8 (A32 mode).
+                let resolved =
+                    (st.pool_word as u64).wrapping_add(pc.raw()).wrapping_add(8);
+                let resolved_va = Va::new(resolved);
+                if seg_idx.contains(resolved_va) {
+                    xrefs.push(xref(st.ldr_va, resolved, XrefKind::DataPointer));
+                    xrefs.push(xref(pc, resolved, XrefKind::DataPointer));
+                    xrefs.push(xref(st.pool_va, resolved, XrefKind::DataPointer));
+                }
+            }
+            continue; // ADD Rd,PC,Rd is not also a branch or LDR
+        }
+
         // ── B / BL ────────────────────────────────────────────────────────
-        // Bits[27:25] = 101; bit[24] = link bit.
-        // Condition code in bits[31:28]; BLX immediate uses cond=1111 so skip.
         let op24 = word & 0x0F000000;
         if op24 == 0x0B000000 {
-            // BL — call
+            // BL — call; clears R0–R3 (ARM ABI scratch).
+            ldr_st[0] = None;
+            ldr_st[1] = None;
+            ldr_st[2] = None;
+            ldr_st[3] = None;
             let target = a32_branch_target(pc.raw(), word);
             if seg_idx.is_exec(Va::new(target)) {
                 xrefs.push(xref(pc, target, XrefKind::Call));
             }
         } else if op24 == 0x0A000000 {
-            // B — jump (conditional or unconditional depending on cond field)
+            // B — jump.  Clear all state on unconditional branches
+            // (cond == 0xE, bits[31:28]).
+            if word >> 28 == 0xE {
+                ldr_st = [None; 16];
+            }
             let target = a32_branch_target(pc.raw(), word);
             if seg_idx.is_exec(Va::new(target)) {
                 xrefs.push(xref(pc, target, XrefKind::Jump));
             }
         } else if word & 0xFE000000 == 0xFA000000 {
-            // BLX immediate — unconditional call that switches to Thumb.
-            // Encoding: `1111 101H imm24`; H adds a half-word offset.
+            // BLX immediate — unconditional call to Thumb.
+            ldr_st[0] = None;
+            ldr_st[1] = None;
+            ldr_st[2] = None;
+            ldr_st[3] = None;
             let h = ((word >> 24) & 1) as i64;
             let imm24 = word & 0x00FF_FFFF;
             let offset = a32_signext24(imm24) * 4 + h * 2;
-            // Clear bit 0: the target is a Thumb address whose LSB indicates
-            // mode in the symbol table but is not part of the actual address.
             let target = ((pc.raw() as i64 + 8 + offset) as u64) & !1u64;
             if seg_idx.is_exec(Va::new(target)) {
                 xrefs.push(xref(pc, target, XrefKind::Call));
             }
         } else if word & 0x0F7F_0000 == 0x051F_0000 {
-            // LDR word, PC-relative: `cond 0101 U001 1111 Rt imm12`
-            // Bit[23] = U (1 = add, 0 = subtract).
+            // LDR word, PC-relative: `cond 0101 U001 1111 Rd imm12`.
+            let rd = ((word >> 12) & 0xF) as usize;
             let u = (word >> 23) & 1;
             let imm12 = (word & 0xFFF) as u64;
             let pool_va = if u != 0 {
@@ -103,50 +158,13 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
             if seg_idx.contains(Va::new(pool_va)) {
                 xrefs.push(xref(pc, pool_va, XrefKind::DataRead));
             }
-
-            // ── LDR + ADD PC pair (PIC GOT-pointer idiom) ─────────────────
-            // If the immediately following instruction is `ADD Rd, PC, Rd`
-            // (same destination register), the literal pool holds a
-            // PC-relative offset V and the pair resolves to:
-            //   resolved = (LDR_va + 12) + V
-            // IDA records data_ptr from the LDR address, the ADD address, and
-            // the literal pool address, all pointing to `resolved`.
-            //
-            // `ADD Rd, PC, Rd` encoding (A32, any cond, S=0, no shift):
-            //   `cond 0000_1000_1111_Rd  0000_0000_Rd`
-            //   Mask  0x0FFF_0FF0 == 0x008F_0000 (bits[27:20]=ADD/S=0,
-            //                                     bits[19:16]=PC, bits[11:4]=0)
-            //   plus  bits[15:12] == bits[3:0] == ldr_rd
-            let ldr_rd = (word >> 12) & 0xF;
-            if i + 4 <= data.len() {
-                let next = u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
-                let is_add_rd_pc_rd = (next & 0x0FFF_0FF0) == 0x008F_0000
-                    && (next >> 12) & 0xF == ldr_rd
-                    && next & 0xF == ldr_rd;
-
-                if is_add_rd_pc_rd {
-                    // Read pool word from segment data (pool_va may be anywhere
-                    // in the same segment; skip if out of bounds).
-                    let pool_off = pool_va as i64 - base.raw() as i64;
-                    if pool_off >= 0 {
-                        let pool_off = pool_off as usize;
-                        if pool_off + 4 <= data.len() {
-                            let v = u32::from_le_bytes(
-                                data[pool_off..pool_off + 4].try_into().unwrap(),
-                            ) as u64;
-                            // ADD PC = LDR_va + 12 (pc+4 + 8).
-                            let resolved = pc.raw().wrapping_add(12).wrapping_add(v);
-                            if seg_idx.contains(Va::new(resolved)) {
-                                // from LDR instruction
-                                xrefs.push(xref(pc, resolved, XrefKind::DataPointer));
-                                // from ADD instruction
-                                xrefs.push(xref(pc + 4u64, resolved, XrefKind::DataPointer));
-                                // from literal pool word itself
-                                xrefs.push(xref(Va::new(pool_va), resolved, XrefKind::DataPointer));
-                            }
-                        }
-                    }
-                }
+            // Capture state for ADD Rd, PC, Rd pair detection.
+            if rd < 15 {
+                ldr_st[rd] = read_pool(pool_va).map(|w| LdrState {
+                    ldr_va: pc,
+                    pool_va: Va::new(pool_va),
+                    pool_word: w,
+                });
             }
         }
     }
