@@ -22,9 +22,9 @@ AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
 | PE x86-64 (MSVC) | 8 | 0.561–0.918 | Low end: concrt140.dll (.pdata FPs). 32-bit RVA EH/RTTI invisible to 8-byte scanner |
 | PE ARM64 (MSVC) | 2 | 0.623–0.752 | Limited by data_ptr gaps in ADRP-heavy code |
 | COFF object (x86-64 / x86-32) | — | — | Format newly supported; no ground-truth benchmark yet |
-| ARM32 ELF armel (A32) | 4 | 0.715–0.763 | call/jump prec ≥0.999/0.967; data_ptr prec ≥0.954 (R_ARM_RELATIVE + LDR+ADD PC pairs); recall capped by IDA's GOT-indirect chain analysis |
-| ARM32 ELF armhf (Thumb-2) | 2 | 0.627–0.651 | call prec ≥0.998; jump FPs from literal-pool bytes; data_ptr recall low (Thumb LDR+ADD non-adjacent, pre-link VA pools) |
-| ARM32 ELF (Android, mixed) | 1 | 0.336 | Heavy intra-section ARM↔Thumb interleaving causes jump FPs; calls still F1=0.932 |
+| ARM32 ELF armel (A32) | 4 | 0.875–0.918 | call prec ≥0.999; data_ptr prec ≥0.985 via R_ARM_RELATIVE + register-state LDR+ADD PC scanner |
+| ARM32 ELF armhf (Thumb-2) | 2 | 0.766–0.832 | call prec ≥0.998; data_ptr prec ≥0.990; jump FPs from literal-pool Thumb B false positives |
+| ARM32 ELF (Android, mixed) | 1 | 0.495 | data_ptr F1=0.886; overall limited by 260k FP jumps from intra-section ARM↔Thumb switches |
 
 Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
 
@@ -208,19 +208,21 @@ Intra-section ARM↔Thumb interleaving (no mapping symbols, stripped Android
 binary) compounds the problem. The only general fix is mapping-symbol-aware or
 CFG-guided disassembly.
 
-### ARM32 Thumb data_ptr recall ~15% (armhf) / ~22% (armel)
+### ARM32 data_ptr recall ~70–85%
 
-**armel (A32):** R_ARM_RELATIVE + adjacent LDR+ADD pairs cover the common PIC
-GOT-pointer idiom.  The remaining FNs are non-adjacent LDR+ADD sequences and
-multi-step GOT-indirect chains that require register-state tracking (analogous
-to the ARM64 ADRP scanner).
+The register-state scanner captures most intra-function LDR+ADD PC pairs.
+Remaining FNs are primarily:
 
-**armhf (Thumb-2):** Literal pool words in `.text` contain pre-link absolute
-VAs (`word = IDA_target`).  byte_scan only covers non-exec sections and sees
-`word < pie_base → no match`.  Fix requires either (a) PIE-aware byte-scan of
-exec sections (`word + pie_base`) or (b) tracking which LDR pool loads are
-followed by an `ADD Rt, PC` (non-adjacent register state).  `.dynsym` xrefs
-(≈13k per binary) are IDA-specific symbol-table references unlikely to match.
+- **Cross-function GOT-pointer chains** (~15%): some binaries pass a GOT
+  offset as a function argument; the `LDR` is in the caller and `ADD PC` in
+  the callee.  Requires inter-procedural data-flow analysis.
+- **`.dynsym` xrefs** (~13k per armhf binary): IDA records `data_ptr` from
+  each dynamic symbol entry to the symbol's `st_value`.  These are ELF
+  structure references, not code xrefs.  Low priority to replicate.
+- **Thumb literal-pool absolute VAs** (<200 per binary): a tiny number of
+  `.text` pool words that contain absolute pre-link VAs but are never used
+  in a `LDR+ADD PC` pair (loaded directly into a register for use as a
+  function pointer).
 
 ### data_write FNs
 
@@ -239,6 +241,9 @@ interprocedural data flow.
 | ARM32 section-probe mode detection | armel binaries 0.000→0.715–0.763 | Top-nibble probe replaces name heuristic; correctly classifies armel (A32) vs armhf (Thumb) |
 | ARM32 R_ARM_RELATIVE reloc parsing | data_ptr 0 TPs → 2k–24k TPs | REL in-place addend; vma_to_file helper for PT_LOAD mapping |
 | ARM32 LDR+ADD PC pair detection | armel data_ptr F1 0.189–0.292 → 0.268–0.361 | Adjacent `LDR Rd,[PC,#N]; ADD Rd,PC,Rd` pair; emits DataPointer from LDR, ADD, and pool |
+| Thumb+A32 register-state LDR+ADD scanner | armhf 0.627–0.651 → 0.766–0.832; armel 0.715–0.763 → 0.875–0.918 | Non-adjacent pairs via ldr_st[16]; analogous to ARM64 ADRP scanner |
+| 32-bit wrap fix for LDR+ADD resolver | armel data_ptr F1 0.268 → 0.774 (libssl3) | pool_word signed offset; u64 cast silently discarded ~87% of pairs with negative offsets |
+| seg_data in ScanRegion | small improvement on multi-worker scans | read_pool now uses full segment data, not just shard slice |
 | GOT slot VA approach | blackcat call F1 0.644→0.964 | Emit to=got_slot_va, normalize in benchmark |
 | ELF reloc data_ptr | +24k TPs across all PIE ELFs | R_*_RELATIVE + R_*_64/ABS64 |
 | Mach-O fixup chain parsing | hello.aarch64 F1 0.946→0.980 | Formats 2, 6, 1, 9, 12 |
