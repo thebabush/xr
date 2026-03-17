@@ -10,8 +10,8 @@ all xref kinds.
 
 ## Current Scores (Paired depth)
 
-Tested against ground truth on 26 binaries across ELF (x86-64,
-AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
+Tested against ground truth on 32 binaries across ELF (x86-64,
+AArch64, ARM32), Mach-O (ARM64), and PE (x86-64, ARM64).
 
 | Category | n | F1 range | Notes |
 |----------|----|----------|-------|
@@ -22,7 +22,7 @@ AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
 | PE x86-64 (MSVC) | 8 | 0.561–0.918 | Low end: concrt140.dll (.pdata FPs). 32-bit RVA EH/RTTI invisible to 8-byte scanner |
 | PE ARM64 (MSVC) | 2 | 0.623–0.752 | Limited by data_ptr gaps in ADRP-heavy code |
 | COFF object (x86-64 / x86-32) | — | — | Format newly supported; no ground-truth benchmark yet |
-| ARM32 ELF armel (A32) | 4 | 0.875–0.918 | call prec ≥0.999; data_ptr prec ≥0.985 via R_ARM_RELATIVE + register-state LDR+ADD PC scanner |
+| ARM32 ELF armel (A32) | 3 | 0.879–0.918 | call prec ≥0.999; data_ptr prec ≥0.985 via R_ARM_RELATIVE + register-state LDR+ADD PC scanner |
 | ARM32 ELF armhf (Thumb-2) | 2 | 0.766–0.832 | call prec ≥0.998; data_ptr prec ≥0.990; jump FPs from literal-pool Thumb B false positives |
 | ARM32 ELF (Android, mixed) | 1 | 0.495 | data_ptr F1=0.886; overall limited by 260k FP jumps from intra-section ARM↔Thumb switches |
 
