@@ -17,8 +17,19 @@ const EXEC_TARGET_MIN_VA: u64 = 0x0100_0000;
 /// Everything a single-pass xref extractor needs to know about
 /// the region it's scanning.
 pub(crate) struct ScanRegion<'a> {
+    /// Slice of the segment covering only this shard's VA range.
+    /// Used by instruction scanners that process instructions sequentially
+    /// within the shard.
     pub data: &'a [u8],
+    /// Start VA of this shard (equals `seg_va` when not sharded).
     pub base_va: Va,
+    /// Full segment data starting from `seg_va`.
+    /// Provided so that scanners can read literal pools or other data that
+    /// lies *outside* the current shard but within the same segment (e.g.
+    /// an ARM32 `LDR Rd,[PC,#N]` whose pool word sits in the next shard).
+    pub seg_data: &'a [u8],
+    /// Base VA of the containing segment.
+    pub seg_va: Va,
     /// Decode mode for this region (Default, Thumb, Arm32).
     /// Carried for introspection; the pass dispatcher already selects the
     /// right scanner based on mode before calling into arch code.
@@ -43,6 +54,8 @@ impl<'a> ScanRegion<'a> {
         Self {
             data: &seg.data[offset..offset + len],
             base_va: start_va,
+            seg_data: seg.data.as_ref(),
+            seg_va: seg.va,
             mode: seg.mode,
             writable: seg.writable,
         }

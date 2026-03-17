@@ -70,13 +70,19 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
     // `ADD Rd,PC,Rd`.
     let mut ldr_st: [Option<LdrState>; 16] = [None; 16];
 
+    // Read a pool word from anywhere within the containing segment (not just the
+    // shard slice).  This is necessary because a LDR near the end of a shard may
+    // have its literal pool in the next shard — using `region.data` would return
+    // None and silently drop the LDR state.
     let read_pool = |pool_va: u64| -> Option<u32> {
-        let off = pool_va as i64 - base.raw() as i64;
+        let off = pool_va as i64 - region.seg_va.raw() as i64;
         if off < 0 {
             return None;
         }
         let off = off as usize;
-        data.get(off..off + 4)
+        region
+            .seg_data
+            .get(off..off + 4)
             .and_then(|s| s.try_into().ok())
             .map(u32::from_le_bytes)
     };
@@ -98,8 +104,14 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
             let rd = rd_bits as usize;
             if let Some(st) = ldr_st[rd].take() {
                 // PC of ADD = add_va + 8 (A32 mode).
-                let resolved =
-                    (st.pool_word as u64).wrapping_add(pc.raw()).wrapping_add(8);
+                // Use 32-bit wrapping: the literal pool holds a signed
+                // PC-relative offset that may be negative (target below ADD).
+                // Casting to u64 before adding would silently produce a
+                // >4 GB address instead of wrapping at 32 bits as the CPU does.
+                let resolved = st
+                    .pool_word
+                    .wrapping_add(pc.raw() as u32)
+                    .wrapping_add(8u32) as u64;
                 let resolved_va = Va::new(resolved);
                 if seg_idx.contains(resolved_va) {
                     xrefs.push(xref(st.ldr_va, resolved, XrefKind::DataPointer));
@@ -123,11 +135,12 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
                 xrefs.push(xref(pc, target, XrefKind::Call));
             }
         } else if op24 == 0x0A000000 {
-            // B — jump.  Clear all state on unconditional branches
-            // (cond == 0xE, bits[31:28]).
-            if word >> 28 == 0xE {
-                ldr_st = [None; 16];
-            }
+            // B — jump.  Do NOT clear LDR state here: the classic ARM32 PIC
+            // idiom branches *forward* over a literal pool (`B forward; .word
+            // offset; forward: ADD Rd,PC,Rd`), so clearing on any B would
+            // break that pair.  Backward unconditional branches (loops, tail-
+            // calls) are harmless — the ADD was scanned before the LDR so
+            // there was no matching state to consume anyway.
             let target = a32_branch_target(pc.raw(), word);
             if seg_idx.is_exec(Va::new(target)) {
                 xrefs.push(xref(pc, target, XrefKind::Jump));
@@ -215,7 +228,13 @@ fn emit_ldr_add_pair(
     seg_idx: &SegmentIndex,
 ) {
     // PC of the ADD instruction = ADD_va + 4 (Thumb: inst + 4).
-    let resolved = (st.pool_word as u64).wrapping_add(add_va.raw()).wrapping_add(4);
+    // Use 32-bit wrapping: pool_word is a signed PC-relative offset that may
+    // be negative (target below ADD).  u64 arithmetic would silently produce
+    // a >4 GB result instead of wrapping at 32 bits as the CPU does.
+    let resolved = st
+        .pool_word
+        .wrapping_add(add_va.raw() as u32)
+        .wrapping_add(4u32) as u64;
     let resolved_va = Va::new(resolved);
     if seg_idx.contains(resolved_va) {
         xrefs.push(xref(st.ldr_va, resolved, XrefKind::DataPointer));
@@ -244,13 +263,17 @@ pub(crate) fn scan_thumb(
     let mut ldr_st: [Option<LdrState>; 16] = [None; 16];
 
     // Helper: read a pool word from the current region.
+    // Read pool word from the full segment (not just the shard slice); see
+    // the same comment in scan_arm32.
     let read_pool = |pool_va: u64| -> Option<u32> {
-        let off = pool_va as i64 - base.raw() as i64;
+        let off = pool_va as i64 - region.seg_va.raw() as i64;
         if off < 0 {
             return None;
         }
         let off = off as usize;
-        data.get(off..off + 4)
+        region
+            .seg_data
+            .get(off..off + 4)
             .and_then(|s| s.try_into().ok())
             .map(u32::from_le_bytes)
     };
@@ -295,9 +318,8 @@ pub(crate) fn scan_thumb(
                         }
                     }
                     0x9000 => {
-                        // B.W T4 — unconditional wide jump; treat as function
-                        // boundary and clear all LDR state.
-                        ldr_st = [None; 16];
+                        // B.W T4 — unconditional wide jump.
+                        // Same rationale as B T2: do not clear LDR state.
                         let target = thumb_bl_target(pc.raw(), hw1, hw2, false);
                         if seg_idx.is_exec(Va::new(target)) {
                             xrefs.push(xref(pc, target, XrefKind::Jump));
@@ -356,8 +378,8 @@ pub(crate) fn scan_thumb(
                 }
             } else if hw1 & 0xF800 == 0xE000 {
                 // B T2 — unconditional branch: `11100 imm11`.
-                // Treat as a function boundary: clear all LDR state.
-                ldr_st = [None; 16];
+                // Do NOT clear LDR state: Thumb code also branches forward over
+                // literal pools before ADD Rt, PC.  Same reasoning as A32.
                 let imm11 = hw1 & 0x7FF;
                 let offset = thumb_signext11(imm11) * 2;
                 let target = (pc.raw() as i64 + 4 + offset) as u64;
