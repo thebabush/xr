@@ -10,6 +10,9 @@
 //! - `BL`  `cond 1011 imm24` — Call
 //! - `BLX` `1111 101H imm24` — Call (unconditional, crosses to Thumb)
 //! - `LDR` PC-relative `cond 0101 U001 1111 Rt imm12` — DataRead
+//! - `LDR Rd,[PC,#N]; ADD Rd,PC,Rd` pair — DataPointer to resolved address
+//!   (classic ARM32 PIC GOT-pointer idiom; the literal pool holds a
+//!   PC-relative offset V; `resolved = (LDR_va + 12) + V`)
 //!
 //! # Thumb-2 mode
 //!
@@ -79,13 +82,58 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
             // Bit[23] = U (1 = add, 0 = subtract).
             let u = (word >> 23) & 1;
             let imm12 = (word & 0xFFF) as u64;
-            let target = if u != 0 {
+            let pool_va = if u != 0 {
                 pc.raw() + 8 + imm12
             } else {
                 pc.raw() + 8 - imm12
             };
-            if seg_idx.contains(Va::new(target)) {
-                xrefs.push(xref(pc, target, XrefKind::DataRead));
+            if seg_idx.contains(Va::new(pool_va)) {
+                xrefs.push(xref(pc, pool_va, XrefKind::DataRead));
+            }
+
+            // ── LDR + ADD PC pair (PIC GOT-pointer idiom) ─────────────────
+            // If the immediately following instruction is `ADD Rd, PC, Rd`
+            // (same destination register), the literal pool holds a
+            // PC-relative offset V and the pair resolves to:
+            //   resolved = (LDR_va + 12) + V
+            // IDA records data_ptr from the LDR address, the ADD address, and
+            // the literal pool address, all pointing to `resolved`.
+            //
+            // `ADD Rd, PC, Rd` encoding (A32, any cond, S=0, no shift):
+            //   `cond 0000_1000_1111_Rd  0000_0000_Rd`
+            //   Mask  0x0FFF_0FF0 == 0x008F_0000 (bits[27:20]=ADD/S=0,
+            //                                     bits[19:16]=PC, bits[11:4]=0)
+            //   plus  bits[15:12] == bits[3:0] == ldr_rd
+            let ldr_rd = (word >> 12) & 0xF;
+            if i + 4 <= data.len() {
+                let next = u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+                let is_add_rd_pc_rd = (next & 0x0FFF_0FF0) == 0x008F_0000
+                    && (next >> 12) & 0xF == ldr_rd
+                    && next & 0xF == ldr_rd;
+
+                if is_add_rd_pc_rd {
+                    // Read pool word from segment data (pool_va may be anywhere
+                    // in the same segment; skip if out of bounds).
+                    let pool_off = pool_va as i64 - base.raw() as i64;
+                    if pool_off >= 0 {
+                        let pool_off = pool_off as usize;
+                        if pool_off + 4 <= data.len() {
+                            let v = u32::from_le_bytes(
+                                data[pool_off..pool_off + 4].try_into().unwrap(),
+                            ) as u64;
+                            // ADD PC = LDR_va + 12 (pc+4 + 8).
+                            let resolved = pc.raw().wrapping_add(12).wrapping_add(v);
+                            if seg_idx.contains(Va::new(resolved)) {
+                                // from LDR instruction
+                                xrefs.push(xref(pc, resolved, XrefKind::DataPointer));
+                                // from ADD instruction
+                                xrefs.push(xref(pc + 4u64, resolved, XrefKind::DataPointer));
+                                // from literal pool word itself
+                                xrefs.push(xref(Va::new(pool_va), resolved, XrefKind::DataPointer));
+                            }
+                        }
+                    }
+                }
             }
         }
     }

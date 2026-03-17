@@ -334,7 +334,7 @@ pub(super) fn parse_elf(
     }
 
     let got_slots = build_elf_got_slots(elf, pie_base);
-    let reloc_pointers = build_elf_reloc_pointers(elf, pie_base, &segments);
+    let reloc_pointers = build_elf_reloc_pointers(elf, bytes, pie_base, &segments);
 
     Ok(ParseResult {
         arch,
@@ -352,11 +352,18 @@ fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
     const R_X86_64_JUMP_SLOT: u32 = 7;
     const R_AARCH64_GLOB_DAT: u32 = 1025;
     const R_AARCH64_JUMP_SLOT: u32 = 1026;
+    const R_ARM_GLOB_DAT: u32 = 21;
+    const R_ARM_JUMP_SLOT: u32 = 22;
 
     let is_got_reloc = |r_type: u32| {
         matches!(
             r_type,
-            R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT
+            R_X86_64_GLOB_DAT
+                | R_X86_64_JUMP_SLOT
+                | R_AARCH64_GLOB_DAT
+                | R_AARCH64_JUMP_SLOT
+                | R_ARM_GLOB_DAT
+                | R_ARM_JUMP_SLOT
         )
     };
 
@@ -371,15 +378,46 @@ fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
 
 fn build_elf_reloc_pointers(
     elf: &goblin::elf::Elf,
+    bytes: &[u8],
     pie_base: u64,
     segments: &[Segment],
 ) -> Vec<RelocPointer> {
+    use goblin::elf::program_header::PT_LOAD;
     use goblin::elf::section_header::SHN_UNDEF;
 
+    // x86-64
     const R_X86_64_RELATIVE: u32 = 8;
     const R_X86_64_64: u32 = 1;
+    // AArch64
     const R_AARCH64_RELATIVE: u32 = 1027;
     const R_AARCH64_ABS64: u32 = 257;
+    // ARM32 — REL format: addend lives in the word at *r_offset in the file
+    const R_ARM_RELATIVE: u32 = 23;
+    const R_ARM_ABS32: u32 = 2;
+
+    // Translate an ELF VMA to its raw file byte offset via PT_LOAD headers.
+    // Used to read the implicit in-place addend for ARM32 REL relocations.
+    let vma_to_file = |vma: u64| -> Option<usize> {
+        elf.program_headers.iter().find_map(|ph| {
+            if ph.p_type == PT_LOAD
+                && vma >= ph.p_vaddr
+                && vma < ph.p_vaddr + ph.p_filesz
+            {
+                Some((vma - ph.p_vaddr + ph.p_offset) as usize)
+            } else {
+                None
+            }
+        })
+    };
+
+    // Read a little-endian u32 from the file at the given ELF VMA.
+    let read_u32_at = |vma: u64| -> Option<u32> {
+        let off = vma_to_file(vma)?;
+        bytes
+            .get(off..off + 4)
+            .and_then(|s| s.try_into().ok())
+            .map(u32::from_le_bytes)
+    };
 
     let seg_set = VaRangeSet::build(segments);
     let mut result = Vec::new();
@@ -389,15 +427,22 @@ fn build_elf_reloc_pointers(
         let r_type = rel.r_type;
 
         if r_type == R_X86_64_RELATIVE || r_type == R_AARCH64_RELATIVE {
+            // RELA: explicit addend encodes the pre-link target.
             let target = Va::new((rel.r_addend.unwrap_or(0) as u64).wrapping_add(pie_base));
             if seg_set.contains(target) {
-                result.push(RelocPointer {
-                    from: Va::new(from),
-                    to: target,
-                });
+                result.push(RelocPointer { from: Va::new(from), to: target });
+            }
+        } else if r_type == R_ARM_RELATIVE {
+            // REL: the word at *place in the file IS the pre-link target VMA.
+            if let Some(addend) = read_u32_at(rel.r_offset) {
+                let target = Va::new((addend as u64).wrapping_add(pie_base));
+                if seg_set.contains(target) {
+                    result.push(RelocPointer { from: Va::new(from), to: target });
+                }
             }
         } else if (r_type == R_X86_64_64 || r_type == R_AARCH64_ABS64) && rel.r_sym != 0 {
-            let sym = &elf
+            // RELA with symbol: target = sym.st_value + addend.
+            let sym = elf
                 .dynsyms
                 .get(rel.r_sym)
                 .or_else(|| elf.syms.get(rel.r_sym));
@@ -409,10 +454,26 @@ fn build_elf_reloc_pointers(
                             .wrapping_add(rel.r_addend.unwrap_or(0) as u64),
                     );
                     if seg_set.contains(target) {
-                        result.push(RelocPointer {
-                            from: Va::new(from),
-                            to: target,
-                        });
+                        result.push(RelocPointer { from: Va::new(from), to: target });
+                    }
+                }
+            }
+        } else if r_type == R_ARM_ABS32 && rel.r_sym != 0 {
+            // REL with symbol: target = sym.st_value + implicit_addend.
+            let sym = elf
+                .dynsyms
+                .get(rel.r_sym)
+                .or_else(|| elf.syms.get(rel.r_sym));
+            if let Some(sym) = sym {
+                if sym.st_shndx != SHN_UNDEF as usize && sym.st_value != 0 {
+                    let implicit_addend = read_u32_at(rel.r_offset).unwrap_or(0);
+                    let target = Va::new(
+                        sym.st_value
+                            .wrapping_add(pie_base)
+                            .wrapping_add(implicit_addend as u64),
+                    );
+                    if seg_set.contains(target) {
+                        result.push(RelocPointer { from: Va::new(from), to: target });
                     }
                 }
             }
