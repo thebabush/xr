@@ -22,9 +22,9 @@ AArch64), Mach-O (ARM64), and PE (x86-64, ARM64).
 | PE x86-64 (MSVC) | 8 | 0.561–0.918 | Low end: concrt140.dll (.pdata FPs). 32-bit RVA EH/RTTI invisible to 8-byte scanner |
 | PE ARM64 (MSVC) | 2 | 0.623–0.752 | Limited by data_ptr gaps in ADRP-heavy code |
 | COFF object (x86-64 / x86-32) | — | — | Format newly supported; no ground-truth benchmark yet |
-| ARM32 ELF armel (A32) | 4 | 0.641–0.679 | call prec ≥0.999; recall limited by data_ptr (0 TP — no ARM32 reloc extraction yet) |
-| ARM32 ELF armhf (Thumb-2) | 2 | 0.565–0.590 | call prec ≥0.998; jump FPs from literal-pool bytes decoded as branches |
-| ARM32 ELF (Android, mixed) | 1 | 0.321 | Heavy intra-section ARM↔Thumb interleaving causes jump FPs; calls still F1=0.932 |
+| ARM32 ELF armel (A32) | 4 | 0.715–0.763 | call/jump prec ≥0.999/0.967; data_ptr prec ≥0.954 (R_ARM_RELATIVE + LDR+ADD PC pairs); recall capped by IDA's GOT-indirect chain analysis |
+| ARM32 ELF armhf (Thumb-2) | 2 | 0.627–0.651 | call prec ≥0.998; jump FPs from literal-pool bytes; data_ptr recall low (Thumb LDR+ADD non-adjacent, pre-link VA pools) |
+| ARM32 ELF (Android, mixed) | 1 | 0.336 | Heavy intra-section ARM↔Thumb interleaving causes jump FPs; calls still F1=0.932 |
 
 Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
 
@@ -208,10 +208,19 @@ Intra-section ARM↔Thumb interleaving (no mapping symbols, stripped Android
 binary) compounds the problem. The only general fix is mapping-symbol-aware or
 CFG-guided disassembly.
 
-### ARM32 data_ptr = 0 TP
+### ARM32 Thumb data_ptr recall ~15% (armhf) / ~22% (armel)
 
-No relocation table parsing for ARM32 ELF yet (`.rel.dyn` / RELATIVE and ABS32
-relocations). All data_ptr xrefs in ARM32 ELF come only from byte-scan.
+**armel (A32):** R_ARM_RELATIVE + adjacent LDR+ADD pairs cover the common PIC
+GOT-pointer idiom.  The remaining FNs are non-adjacent LDR+ADD sequences and
+multi-step GOT-indirect chains that require register-state tracking (analogous
+to the ARM64 ADRP scanner).
+
+**armhf (Thumb-2):** Literal pool words in `.text` contain pre-link absolute
+VAs (`word = IDA_target`).  byte_scan only covers non-exec sections and sees
+`word < pie_base → no match`.  Fix requires either (a) PIE-aware byte-scan of
+exec sections (`word + pie_base`) or (b) tracking which LDR pool loads are
+followed by an `ADD Rt, PC` (non-adjacent register state).  `.dynsym` xrefs
+(≈13k per binary) are IDA-specific symbol-table references unlikely to match.
 
 ### data_write FNs
 
@@ -227,7 +236,9 @@ interprocedural data flow.
 
 | Fix | Impact | Notes |
 |-----|--------|-------|
-| ARM32 section-probe mode detection | armel binaries 0.000→0.641–0.679 | Top-nibble probe replaces name heuristic; correctly classifies armel (A32) vs armhf (Thumb) |
+| ARM32 section-probe mode detection | armel binaries 0.000→0.715–0.763 | Top-nibble probe replaces name heuristic; correctly classifies armel (A32) vs armhf (Thumb) |
+| ARM32 R_ARM_RELATIVE reloc parsing | data_ptr 0 TPs → 2k–24k TPs | REL in-place addend; vma_to_file helper for PT_LOAD mapping |
+| ARM32 LDR+ADD PC pair detection | armel data_ptr F1 0.189–0.292 → 0.268–0.361 | Adjacent `LDR Rd,[PC,#N]; ADD Rd,PC,Rd` pair; emits DataPointer from LDR, ADD, and pool |
 | GOT slot VA approach | blackcat call F1 0.644→0.964 | Emit to=got_slot_va, normalize in benchmark |
 | ELF reloc data_ptr | +24k TPs across all PIE ELFs | R_*_RELATIVE + R_*_64/ABS64 |
 | Mach-O fixup chain parsing | hello.aarch64 F1 0.946→0.980 | Formats 2, 6, 1, 9, 12 |
