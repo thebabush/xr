@@ -1,5 +1,5 @@
 use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
-use crate::loader::{Arch, Arm32Segment, DecodeMode, RelocPointer, SegmentArch};
+use crate::loader::{Arch, Arm32Segment, DecodeMode, ModeSwitch, RelocPointer, SegmentArch};
 use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
@@ -103,8 +103,11 @@ pub(super) fn parse_elf(
         byte_scannable: bool,
         is_code: bool,
         /// Per-section decode mode — only meaningful for ARM32 ELF.
-        /// Set by the majority-vote probe; ignored for non-ARM32 segments.
+        /// Set by the sliding classifier; ignored for non-ARM32 segments.
         arm32_mode: DecodeMode,
+        /// Intra-section ISA transitions from the classifier.
+        /// Empty for non-ARM32 and for uniform sections.
+        arm32_switches: Vec<(u64, DecodeMode)>,
     }
     let mut section_infos: Vec<SectionInfo> = Vec::new();
     for sh in &elf.section_headers {
@@ -129,17 +132,21 @@ pub(super) fn parse_elf(
                 name: name.to_string(),
                 byte_scannable: !NO_SCAN_SECTIONS.contains(&name),
                 is_code,
-                arm32_mode: DecodeMode::Arm32, // filled in below by probe; irrelevant for non-ARM32
+                arm32_mode: DecodeMode::Arm32, // filled in below; irrelevant for non-ARM32
+                arm32_switches: vec![],        // filled in below for ARM32 sections
             });
         }
     }
     section_infos.sort_by_key(|s| s.va);
 
-    // For ARM32 ELF, assign per-section decode modes via majority-vote probe.
-    // For all other architectures the field is unused.
+    // For ARM32 ELF, run the sliding classifier (H=2) over each code section to
+    // produce a per-word mode sequence with intra-section transitions.
+    // For all other architectures the fields are unused.
     if arch == Arch::Arm32 {
         for si in &mut section_infos {
-            si.arm32_mode = probe_arm32_section_mode(bytes, si.file_offset, si.file_size);
+            let switches = classify_section_mode(bytes, si.file_offset, si.file_size, si.va, 2);
+            si.arm32_mode     = switches[0].1;
+            si.arm32_switches = switches.into_iter().skip(1).collect();
         }
     }
 
@@ -166,6 +173,9 @@ pub(super) fn parse_elf(
         for si in &mut section_infos {
             si.va += pie_base;
             si.end += pie_base;
+            for (va, _) in &mut si.arm32_switches {
+                *va += pie_base;
+            }
         }
     }
 
@@ -206,7 +216,12 @@ pub(super) fn parse_elf(
                         writable: write,
                         byte_scannable: sec.byte_scannable,
                         arch: if arch == Arch::Arm32 && sec.is_code {
-                            SegmentArch::Arm32(Arm32Segment::uniform(sec.arm32_mode))
+                            let mut arm32 = Arm32Segment::uniform(sec.arm32_mode);
+                            arm32.switches = sec.arm32_switches
+                                .iter()
+                                .map(|&(va, mode)| ModeSwitch { va: Va::new(va), mode })
+                                .collect();
+                            SegmentArch::Arm32(arm32)
                         } else {
                             SegmentArch::Generic
                         },
@@ -250,10 +265,15 @@ pub(super) fn parse_elf(
                     writable: write,
                     byte_scannable,
                     arch: if arch == Arch::Arm32 && exec {
-                        // No covering section: probe this LOAD segment's bytes
-                        // to determine its dominant ISA (A32 or Thumb).
-                        let probed = probe_arm32_section_mode(bytes, offset, filesz);
-                        SegmentArch::Arm32(Arm32Segment::uniform(probed))
+                        // No covering section: classify this LOAD segment directly.
+                        // ph_va is already rebased, so classifier VAs are correct.
+                        let switches = classify_section_mode(bytes, offset, filesz, ph_va, 2);
+                        let default_mode = switches[0].1;
+                        let mut arm32 = Arm32Segment::uniform(default_mode);
+                        arm32.switches = switches.into_iter().skip(1)
+                            .map(|(va, mode)| ModeSwitch { va: Va::new(va), mode })
+                            .collect();
+                        SegmentArch::Arm32(arm32)
                     } else {
                         SegmentArch::Generic
                     },
@@ -312,6 +332,60 @@ pub(super) fn parse_elf(
         got_slots,
         reloc_pointers,
     })
+}
+
+/// Classify the ISA mode sequence of an ARM32 executable section using the
+/// depth-6 decision tree with hysteresis `hyst` (use 2 for production).
+///
+/// Returns a non-empty list of `(va, mode)` transitions in address order.
+/// The first entry's mode is the dominant ISA at the section start.
+/// Subsequent entries mark confirmed mode switches within the section.
+///
+/// When the classifier never locks (section too short or ambiguous), falls
+/// back to [`probe_arm32_section_mode`] so callers always get a result.
+fn classify_section_mode(
+    file:    &[u8],
+    offset:  usize,
+    size:    usize,
+    base_va: u64,
+    hyst:    u8,
+) -> Vec<(u64, DecodeMode)> {
+    use crate::arch::arm32_mode_classifier::{ArmMode, ModePredictor, predict_mode};
+
+    if size < 4 || offset.saturating_add(size) > file.len() {
+        return vec![(base_va, DecodeMode::Arm32)];
+    }
+
+    let data = &file[offset..offset + size];
+    let mut pred    = ModePredictor::new(hyst);
+    let mut switches: Vec<(u64, DecodeMode)> = Vec::new();
+    let mut current: Option<DecodeMode>      = None;
+
+    for word_idx in 0..(size / 4) {
+        let off = word_idx * 4;
+        let va  = base_va + off as u64;
+
+        let committed = pred.push(predict_mode(data, off));
+
+        let mode = match committed {
+            Some(ArmMode::Arm32) => DecodeMode::Arm32,
+            Some(ArmMode::Thumb) => DecodeMode::Thumb,
+            // Data predictions or no lock yet: hold current mode, no switch.
+            Some(ArmMode::Data) | None => continue,
+        };
+
+        if current != Some(mode) {
+            switches.push((va, mode));
+            current = Some(mode);
+        }
+    }
+
+    if switches.is_empty() {
+        // Classifier never locked — fall back to the majority-vote probe.
+        vec![(base_va, probe_arm32_section_mode(file, offset, size))]
+    } else {
+        switches
+    }
 }
 
 fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
