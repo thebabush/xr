@@ -90,17 +90,6 @@ pub(super) fn parse_elf(
     // Sections that should NOT be byte-scanned for pointers.
     const NO_SCAN_SECTIONS: &[&str] = &[".data.rel.ro", ".data.rel.ro.local"];
 
-    // Sections that are NOT machine code, even when they appear in an exec PT_LOAD.
-    const NON_CODE_SECTIONS: &[&str] = &[
-        ".rodata",
-        ".rodata1",
-        ".eh_frame_hdr",
-        ".eh_frame",
-        ".gcc_except_table",
-        ".note.gnu.build-id",
-        ".note.ABI-tag",
-    ];
-
     struct SectionInfo {
         va: u64,
         end: u64,
@@ -120,6 +109,13 @@ pub(super) fn parse_elf(
             continue;
         }
         if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
+            // Use the ELF section flag SHF_EXECINSTR as the authoritative signal
+            // for whether a section contains machine instructions.  A name-based
+            // blacklist is fragile: Android binaries place .ARM.exidx, .dynsym,
+            // .hash, .rel.dyn, and .rodata all inside the same R-X PT_LOAD, so
+            // the old blacklist decoded symbol tables and relocation tables as
+            // Thumb code, producing hundreds of thousands of false-positive jumps.
+            let is_code = sh.sh_flags & (SHF_EXECINSTR as u64) != 0;
             section_infos.push(SectionInfo {
                 va: sh.sh_addr,
                 end: sh.sh_addr + sh.sh_size,
@@ -127,7 +123,7 @@ pub(super) fn parse_elf(
                 file_size: sh.sh_size as usize,
                 name: name.to_string(),
                 byte_scannable: !NO_SCAN_SECTIONS.contains(&name),
-                is_code: !NON_CODE_SECTIONS.contains(&name),
+                is_code,
                 mode: DecodeMode::Default, // filled in below for ARM32
             });
         }
