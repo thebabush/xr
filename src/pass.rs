@@ -440,12 +440,20 @@ impl<'a> XrefPass<'a> {
             output.join().expect("output thread panicked")
         });
 
+        // Count only segments that were actually processed: executable segments
+        // (instruction scan) plus byte-scannable data segments (pointer scan).
+        // Summing all segment data would overstate work done by including BSS,
+        // .data.rel.ro, and other segments that are never fed to a scanner.
         let bytes_scanned: u64 = self
             .binary
-            .segments
-            .iter()
-            .map(|s| s.data.len() as u64)
-            .sum();
+            .code_segments()
+            .map(|s| s.data().len() as u64)
+            .sum::<u64>()
+            + self
+                .binary
+                .scannable_data_segments()
+                .map(|s| s.data().len() as u64)
+                .sum::<u64>();
         let segments_scanned = self.binary.segments.len();
 
         PassResult {

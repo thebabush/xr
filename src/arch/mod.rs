@@ -12,7 +12,7 @@ use crate::xref::{Confidence, Xref, XrefKind};
 /// Values below this threshold are almost always 3-byte ASCII strings whose
 /// little-endian representation accidentally falls in the code segment VA range
 /// (e.g. `"ode\0…"` → `0x65646f`). No real 64-bit code pointer is below 16 MiB.
-const EXEC_TARGET_MIN_VA: u64 = 0x0100_0000;
+const EXEC_TARGET_MIN_VA: Va = Va::new(0x0100_0000);
 
 /// Everything a single-pass xref extractor needs to know about
 /// the region it's scanning.
@@ -35,10 +35,6 @@ pub(crate) struct ScanRegion<'a> {
     /// right scanner based on mode before calling into arch code.
     #[allow(dead_code)]
     pub mode: DecodeMode,
-    /// True if the source segment is writable (e.g. .data, .got).
-    /// Reserved for future use by architecture-specific scanners.
-    #[allow(dead_code)]
-    pub writable: bool,
 }
 
 impl<'a> ScanRegion<'a> {
@@ -52,12 +48,11 @@ impl<'a> ScanRegion<'a> {
         let offset = (start_va - seg.va) as usize;
         let len = ((end_va - start_va) as usize).min(seg.data.len() - offset);
         Self {
-            data: &seg.data[offset..offset + len],
+            data: &seg.data()[offset..offset + len],
             base_va: start_va,
-            seg_data: seg.data.as_ref(),
+            seg_data: seg.data(),
             seg_va: seg.va,
             mode: seg.mode,
-            writable: seg.writable,
         }
     }
 }
@@ -206,7 +201,7 @@ impl<'a> SegmentDataIndex<'a> {
                 start: s.va,
                 end: s.va + s.data.len() as u64,
                 flags: segment_flags(s),
-                data: &s.data,
+                data: s.data(),
             })
             .collect();
         entries.sort_unstable_by_key(|e| e.start);
@@ -331,7 +326,7 @@ pub(crate) fn byte_scan_pointers(
                 // Strings in data sections can form a value in the exec VA range
                 // from just 3 bytes (e.g. "ode\0…" → 0x65646f in a binary loaded
                 // at 0x400000). No real 64-bit code pointer is below 0x0100_0000.
-                Some(_) => target >= EXEC_TARGET_MIN_VA,
+                Some(_) => target_va >= EXEC_TARGET_MIN_VA,
                 // Target not in any mapped segment: skip.
                 None => false,
             };

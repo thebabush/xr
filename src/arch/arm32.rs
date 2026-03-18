@@ -54,6 +54,22 @@ use crate::arch::{SegmentIndex, ScanRegion};
 use crate::va::Va;
 use crate::xref::{Confidence, Xref, XrefKind};
 
+// ── Shared state type ─────────────────────────────────────────────────────────
+
+/// Per-register state captured by `LDR Rd/Rt, [PC, #N]`.
+///
+/// Consumed by the matching `ADD Rd/Rt, PC` instruction to resolve the
+/// final GOT-pointer address.  Shared by both the A32 and Thumb-2 scanners.
+#[derive(Clone, Copy)]
+struct LdrState {
+    /// Address of the `LDR` instruction that loaded the pool offset.
+    ldr_va: Va,
+    /// Address of the literal pool word in the binary.
+    pool_va: Va,
+    /// Raw 32-bit value stored at `pool_va` (the PC-relative offset).
+    pool_word: u32,
+}
+
 // ── ARM32 (A32) scanner ───────────────────────────────────────────────────────
 
 /// Linear scan of a 4-byte-aligned ARM32 code region.
@@ -88,9 +104,10 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
     };
 
     let mut i = 0usize;
-    while i + 3 < data.len() {
+    while i + 4 <= data.len() {
         let pc = base + i as u64;
-        let word = u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+        // SAFETY: loop condition guarantees data[i..i+4] is in bounds.
+        let word = u32::from_le_bytes(data[i..i + 4].try_into().expect("4-byte slice"));
         i += 4;
 
         // ── ADD Rd, PC, Rd ────────────────────────────────────────────────
@@ -207,17 +224,6 @@ fn a32_signext24(imm24: u32) -> i64 {
 
 // ── Thumb-2 scanner ───────────────────────────────────────────────────────────
 
-/// Per-register state for the `LDR Rt,[PC,#N]` → `ADD Rt, PC` pair detector.
-#[derive(Clone, Copy)]
-struct LdrState {
-    /// Address of the `LDR` instruction that loaded the pool offset.
-    ldr_va: Va,
-    /// Address of the literal pool word in the binary.
-    pool_va: Va,
-    /// Raw 32-bit value stored at `pool_va` (the PC-relative offset `V`).
-    pool_word: u32,
-}
-
 /// Emit DataPointer xrefs from all three addresses that IDA records for a
 /// resolved LDR+ADD PC pair: LDR instruction, ADD instruction, and pool word.
 #[inline]
@@ -279,16 +285,17 @@ pub(crate) fn scan_thumb(
     };
 
     let mut i = 0usize;
-    while i + 1 < data.len() {
+    while i + 2 <= data.len() {
         let pc = base + i as u64;
-        let hw1 = u16::from_le_bytes(data[i..i + 2].try_into().unwrap());
+        // SAFETY: loop condition guarantees data[i..i+2] is in bounds.
+        let hw1 = u16::from_le_bytes(data[i..i + 2].try_into().expect("2-byte slice"));
 
         // A halfword ≥ 0xE800 is the first half of a 32-bit instruction.
         if hw1 >= 0xE800 {
             if i + 3 >= data.len() {
                 break;
             }
-            let hw2 = u16::from_le_bytes(data[i + 2..i + 4].try_into().unwrap());
+            let hw2 = u16::from_le_bytes(data[i + 2..i + 4].try_into().expect("4-byte 32-bit insn"));
             i += 4;
 
             if hw1 & 0xF800 == 0xF000 {

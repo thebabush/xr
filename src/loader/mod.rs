@@ -131,7 +131,7 @@ pub struct Segment {
     pub va: Va,
     /// Raw bytes — a [`SegData`] wrapping a slice into the mmap (zero-copy).
     ///
-    /// Access via [`Deref`]: `seg.data.len()`, `&seg.data[range]`, etc.
+    /// Access via [`data()`](Self::data): `seg.data().len()`, `&seg.data()[range]`, etc.
     /// The resulting `&[u8]` lifetime is tied to `&seg`, not `'static`.
     pub(crate) data: SegData,
     /// Whether this segment contains executable code.
