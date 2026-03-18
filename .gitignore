@@ -3,6 +3,9 @@
 # Test binaries and ground-truth data (managed separately)
 testcases/
 
+# Detour workspaces (agent subprojects, corpus data, trained models)
+detours/
+
 # Misc
 .DS_Store
 call
