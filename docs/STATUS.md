@@ -26,7 +26,11 @@ AArch64, ARM32), Mach-O (ARM64), and PE (x86-64, ARM64).
 | ARM32 ELF armhf (Thumb-2) | 3 | 0.783–0.878 | call prec ≥0.997; jump FPs reduced by classifier; data_ptr recall limited by dynsym gap |
 | ARM32 ELF (Android, mixed) | 1 | 0.881 | was 0.495; classifier eliminated ~254k/260k jump FPs from intra-section ARM↔Thumb transitions |
 
-Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
+Call precision is ≥0.948 on all tested binaries. Call recall and F1 vary:
+near-perfect on static ELF (curl-amd64 F1=0.999) and armel (F1=0.998), lower
+on binaries with many indirect/PLT calls (libharlem-shake.so F1=0.934 from PLT
+stub VA mismatch; hello-linux-gcc F1=0.647 from unresolved indirect calls in a
+large static binary).
 
 ---
 
@@ -53,7 +57,7 @@ scan workers (rayon custom pool, n_workers threads)
 
 - **Scan workers**: `n_workers` rayon threads; each scans one shard, sends `Vec<Xref>` via `tx`
 - **Drain relay**: pure channel relay; counts xrefs, forwards to output thread without blocking on I/O; sets stop flag on `Break`
-- **Output thread**: calls `on_batch` under `pool.install` so any `par_iter` inside shares the scan pool (no oversubscription); formats in parallel chunks of 8192 records via `fold`+`reduce` into `Vec<u8>`, then one `write_all` per chunk through a 4 MiB `BufWriter`
+- **Output thread**: owns `on_batch` — formats xrefs sequentially (removed `par_iter`; eliminated ~18% runtime spent in rayon contention), then `write_all` once per 8192-record chunk through a 4 MiB `BufWriter`
 - **Bounded output channel** (`sync_channel(n_workers*4)`): applies backpressure to scan if output falls behind, bounding peak memory
 
 ### ARM64 hot-path decode

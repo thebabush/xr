@@ -13,6 +13,20 @@
   produce no extern-VA xrefs. ARM32 and x86-64/AArch64 are already handled.
   (`src/loader/elf.rs`)
 
+- [ ] ARM32 ELF armhf binaries miss ~13k `data_ptr` FNs per binary because
+  IDA records a `data_ptr` xref from each `.dynsym` slot to the symbol's
+  `st_value`. These are ELF structure references, not code xrefs, but they
+  show up in ground truth. Emitting them is straightforward: iterate
+  `.dynsym` entries, use the slot VA as `from` and `st_value & !1` as `to`.
+  (`src/loader/elf.rs`)
+
+- [ ] ARM32 classifier H=2 latency leaves a 4-byte blind spot at each
+  ISA transition — the mode switch is recorded at word N+1 rather than N.
+  Increasing to H=3 adds an 8-byte blind spot but may reduce residual FPs
+  on armhf where short Thumb runs inside ARM32 sections cause rapid flipping.
+  Worth a benchmark sweep over H=1..4 on the armhf corpus.
+  (`src/arch/arm32_mode_classifier.rs`, `src/loader/elf.rs`)
+
 - [ ] `src/arch/arm64.rs` is 1316 lines and growing. Consider splitting into
   `arm64_scan.rs` (linear + ADRP pair scanner) and `arm64_jump_table.rs`
   (jump table recovery) once a natural seam presents itself.
