@@ -22,9 +22,9 @@ AArch64, ARM32), Mach-O (ARM64), and PE (x86-64, ARM64).
 | PE x86-64 (MSVC) | 8 | 0.561–0.918 | Low end: concrt140.dll (.pdata FPs). 32-bit RVA EH/RTTI invisible to 8-byte scanner |
 | PE ARM64 (MSVC) | 2 | 0.623–0.752 | Limited by data_ptr gaps in ADRP-heavy code |
 | COFF object (x86-64 / x86-32) | — | — | Format newly supported; no ground-truth benchmark yet |
-| ARM32 ELF armel (A32) | 3 | 0.879–0.918 | call prec ≥0.999; data_ptr prec ≥0.985 via R_ARM_RELATIVE + register-state LDR+ADD PC scanner |
-| ARM32 ELF armhf (Thumb-2) | 2 | 0.766–0.832 | call prec ≥0.998; data_ptr prec ≥0.990; jump FPs from literal-pool Thumb B false positives |
-| ARM32 ELF (Android, mixed) | 1 | 0.495 | data_ptr F1=0.886; overall limited by 260k FP jumps from intra-section ARM↔Thumb switches |
+| ARM32 ELF armel (A32) | 3 | 0.878–0.912 | call prec ≥0.999; data_ptr prec ≥0.982 |
+| ARM32 ELF armhf (Thumb-2) | 3 | 0.783–0.878 | call prec ≥0.997; jump FPs reduced by classifier; data_ptr recall limited by dynsym gap |
+| ARM32 ELF (Android, mixed) | 1 | 0.881 | was 0.495; classifier eliminated ~254k/260k jump FPs from intra-section ARM↔Thumb transitions |
 
 Call xref precision is near-perfect (F1 ≥0.995) on all tested binaries.
 
@@ -74,11 +74,13 @@ Each binary is split into `Segment` structs with:
   (relocation tables produce ~5–29x FP:TP ratio without reloc context)
 - PIE ELFs (ET_DYN with first PT_LOAD at p_vaddr==0) are rebased to `0x0040_0000`
   (the default load address used by common disassemblers)
-- ARM32 ELF: per-section Thumb/A32 mode from ELF mapping symbols (`$t`/`$a`)
-  when present; otherwise each executable section is probed — if its first 4
-  bytes form a LE u32 with top nibble `0xE` (ARM32 "always" condition) it is
-  decoded as A32, otherwise Thumb.  Correctly distinguishes armhf (`.text`=Thumb,
-  `.plt`/`.init`=A32) from armel (all sections A32) without mapping symbols.
+- ARM32 ELF: a depth-6 decision tree (8-byte lookahead, H=2 hysteresis) classifies
+  each 4-byte-aligned word as Arm32, Thumb, or Data.  Committed mode changes become
+  `ModeSwitch` entries on the segment so `scan_arm32_shard` dispatches the correct
+  ISA scanner at every intra-section boundary.  Trained on 59 ARM32 ELF libraries;
+  97.9% arm32 recall / 97.8% thumb recall on libamp.so (held-out mixed corpus).
+  Falls back to the majority-vote probe (first 16 words) if the classifier never
+  locks (section too short / ambiguous).
 
 ### Xref kinds
 
@@ -152,6 +154,7 @@ src/
     arm32.rs                     ← Thumb-2 + ARM32 (A32) scanners
     arm64.rs                     ← ADRP pair scan, jump table recovery
     arm64_decode.rs              ← pure bitmask ARM64 decoder
+    arm32_mode_classifier.rs     ← depth-6 decision tree + hysteresis for ARM32/Thumb classification
     x86_64.rs                    ← x86-64 scanner, jump table recovery
   bin/
     benchmark.rs                 ← benchmark vs ground truth
@@ -199,14 +202,12 @@ deep MSVC EH metadata parsing.
 `CALL rel32` through PLT stubs → ground truth records `to=extern_va`, xr records
 `to=PLT_stub_va`. Causes ~711 call FNs on libharlem-shake.so.
 
-### ARM32 jump FPs from literal pools (~259k on libamp.so)
+### ARM32 residual jump FPs (~4k on libamp.so, ~2–6k on armhf)
 
-Thumb-2 code sections embed literal pool data between functions. The linear
-scanner treats these bytes as instructions, and 16-bit values in `0xE000–0xE7FF`
-match the `B T2` (unconditional branch) encoding, producing spurious jumps.
-Intra-section ARM↔Thumb interleaving (no mapping symbols, stripped Android
-binary) compounds the problem. The only general fix is mapping-symbol-aware or
-CFG-guided disassembly.
+The depth-6 classifier reduced jump FPs from ~260k to ~4k on libamp.so and
+from ~10–15k to ~2–6k on armhf binaries.  Remaining FPs come from literal pool
+words where the 8-byte lookahead window straddles a mode boundary and the
+H=2 filter hasn't committed yet (4-byte latency at each transition).
 
 ### ARM32 data_ptr recall ~70–85%
 
@@ -239,6 +240,7 @@ interprocedural data flow.
 | Fix | Impact | Notes |
 |-----|--------|-------|
 | ARM32 section-probe mode detection | armel binaries 0.000→0.715–0.763 | Top-nibble probe replaces name heuristic; correctly classifies armel (A32) vs armhf (Thumb) |
+| ARM32 depth-6 decision tree classifier (H=2) | libamp.so 0.495→0.881; armhf +0.05 | Sliding per-word ISA classifier with hysteresis replaces section-wide probe; eliminates ~254k/260k jump FPs on mixed Android binary |
 | ARM32 R_ARM_RELATIVE reloc parsing | data_ptr 0 TPs → 2k–24k TPs | REL in-place addend; vma_to_file helper for PT_LOAD mapping |
 | ARM32 LDR+ADD PC pair detection | armel data_ptr F1 0.189–0.292 → 0.268–0.361 | Adjacent `LDR Rd,[PC,#N]; ADD Rd,PC,Rd` pair; emits DataPointer from LDR, ADD, and pool |
 | Thumb+A32 register-state LDR+ADD scanner | armhf 0.627–0.651 → 0.766–0.832; armel 0.715–0.763 → 0.875–0.918 | Non-adjacent pairs via ldr_st[16]; analogous to ARM64 ADRP scanner |
