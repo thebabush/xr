@@ -725,7 +725,7 @@ fn gpr_index(reg: Register) -> Option<GprIdx> {
 mod tests {
     use super::*;
     use crate::arch::ScanRegion;
-    use crate::loader::{Arm32Segment, DecodeMode, SegData, Segment, SegmentArch};
+    use crate::loader::{SegData, Segment, SegmentArch};
     use crate::xref::{Confidence, XrefKind};
 
     fn fake_seg(va: u64, data: &'static [u8]) -> Segment {

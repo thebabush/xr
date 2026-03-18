@@ -105,6 +105,10 @@ pub(super) fn parse_elf(
         /// Per-section decode mode — only meaningful for ARM32 ELF.
         /// Ignored when building non-ARM32 segments.
         arm32_mode: DecodeMode,
+        /// Intra-section mode-switching points derived from `$t`/`$a` mapping
+        /// symbols at addresses strictly inside `(va, end)`.  Empty for
+        /// non-ARM32 and for sections whose ISA does not change internally.
+        arm32_switches: Vec<(u64, DecodeMode)>,
     }
     let mut section_infos: Vec<SectionInfo> = Vec::new();
     for sh in &elf.section_headers {
@@ -130,6 +134,7 @@ pub(super) fn parse_elf(
                 byte_scannable: !NO_SCAN_SECTIONS.contains(&name),
                 is_code,
                 arm32_mode: DecodeMode::Arm32, // filled in below; irrelevant for non-ARM32
+                arm32_switches: vec![],        // filled in below for ARM32 with mapping symbols
             });
         }
     }
@@ -137,7 +142,7 @@ pub(super) fn parse_elf(
 
     // For ARM32 ELF, assign per-section decode modes from mapping symbols or
     // the byte probe.  For all other architectures the field is unused.
-    let arm32_default_mode = if arch == Arch::Arm32 {
+    let _arm32_default_mode = if arch == Arch::Arm32 {
         // Collect ELF mapping symbols ($t = Thumb, $a = ARM32).
         // These are local STT_NOTYPE symbols present in non-stripped binaries.
         let mut map_syms: Vec<(u64, DecodeMode)> = elf
@@ -160,12 +165,21 @@ pub(super) fn parse_elf(
         if !map_syms.is_empty() {
             map_syms.sort_unstable_by_key(|e| e.0);
             for si in &mut section_infos {
-                let idx = map_syms.partition_point(|e| e.0 <= si.va);
-                si.arm32_mode = if idx > 0 {
-                    map_syms[idx - 1].1
+                // Mode at section start: last mapping symbol at or before si.va.
+                let start_idx = map_syms.partition_point(|e| e.0 <= si.va);
+                si.arm32_mode = if start_idx > 0 {
+                    map_syms[start_idx - 1].1
                 } else {
                     DecodeMode::Arm32 // no mapping symbol precedes → ARM32
                 };
+                // Intra-section switches: mapping symbols strictly inside
+                // (si.va, si.end).  These represent mid-section ISA changes
+                // (e.g. ARM32 → Thumb for a Thumb stub at the end of .text).
+                let end_idx = map_syms.partition_point(|e| e.0 < si.end);
+                si.arm32_switches = map_syms[start_idx..end_idx]
+                    .iter()
+                    .map(|&(va, mode)| (va, mode))
+                    .collect();
             }
         } else {
             // Stripped binary: majority-vote probe over the first 16 words.
@@ -202,6 +216,9 @@ pub(super) fn parse_elf(
         for si in &mut section_infos {
             si.va += pie_base;
             si.end += pie_base;
+            for (va, _) in &mut si.arm32_switches {
+                *va += pie_base;
+            }
         }
     }
 
@@ -242,7 +259,12 @@ pub(super) fn parse_elf(
                         writable: write,
                         byte_scannable: sec.byte_scannable,
                         arch: if arch == Arch::Arm32 && sec.is_code {
-                            SegmentArch::Arm32(Arm32Segment::uniform(sec.arm32_mode))
+                            let mut arm32 = Arm32Segment::uniform(sec.arm32_mode);
+                            arm32.switches = sec.arm32_switches
+                                .iter()
+                                .map(|&(va, mode)| ModeSwitch { va: Va::new(va), mode })
+                                .collect();
+                            SegmentArch::Arm32(arm32)
                         } else {
                             SegmentArch::Generic
                         },
@@ -286,7 +308,10 @@ pub(super) fn parse_elf(
                     writable: write,
                     byte_scannable,
                     arch: if arch == Arch::Arm32 && exec {
-                        SegmentArch::Arm32(Arm32Segment::uniform(arm32_default_mode))
+                        // No covering section: probe this LOAD segment's bytes
+                        // to determine its dominant ISA (A32 or Thumb).
+                        let probed = probe_arm32_section_mode(bytes, offset, filesz);
+                        SegmentArch::Arm32(Arm32Segment::uniform(probed))
                     } else {
                         SegmentArch::Generic
                     },
@@ -343,13 +368,25 @@ pub(super) fn parse_elf(
             let seg_va  = seg.va;
             let seg_end = Va::new(seg.va.raw() + seg.data().len() as u64);
             if let SegmentArch::Arm32(ref mut arm32) = seg.arch {
-                let sw: Vec<ModeSwitch> = func_switches
+                let func_sw: Vec<ModeSwitch> = func_switches
                     .iter()
                     .filter(|&&(va, _)| va >= seg_va && va < seg_end)
                     .map(|&(va, mode)| ModeSwitch { va, mode })
                     .collect();
-                if !sw.is_empty() {
-                    arm32.switches = sw;
+                if !func_sw.is_empty() {
+                    // Merge with any mapping-symbol switches already stored.
+                    // Func-symbol entries take precedence at conflicting VAs
+                    // (both encode the same information; func symbols win ties).
+                    let existing = std::mem::take(&mut arm32.switches);
+                    // Collect the survivors of existing first so func_sw is
+                    // no longer borrowed when we extend with it.
+                    let mut merged: Vec<ModeSwitch> = existing
+                        .into_iter()
+                        .filter(|e| func_sw.iter().all(|s| s.va != e.va))
+                        .collect();
+                    merged.extend(func_sw);
+                    merged.sort_unstable_by_key(|s| s.va);
+                    arm32.switches = merged;
                 }
             }
         }

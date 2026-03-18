@@ -537,33 +537,27 @@ fn scan_shard(
     depth: Depth,
     ctx: &ScanCtx<'_>,
 ) -> Vec<Xref> {
-    let region = ScanRegion::new(seg, start_va, end_va);
-
     match (arch, depth) {
         (Arch::Arm64, Depth::Linear) => {
+            let region = ScanRegion::new(seg, start_va, end_va);
             arm64::scan_linear(&region, ctx.seg_idx)
         }
         (Arch::Arm64, Depth::Paired) => {
+            let region = ScanRegion::new(seg, start_va, end_va);
             arm64::scan_adrp(&region, ctx.seg_idx, ctx.data_idx)
         }
         (Arch::Arm32, Depth::Linear | Depth::Paired) => {
-            // Look up the mode in effect at the shard's start address from
-            // the Arm32Segment switching table; fall back to ARM32 if the
-            // segment carries no arch-specific data (shouldn't happen after
-            // the loader, but be defensive).
-            let mode = match &seg.arch {
-                SegmentArch::Arm32(a) => a.mode_at(start_va),
-                _                     => DecodeMode::Arm32,
-            };
-            match mode {
-                DecodeMode::Thumb => arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base),
-                DecodeMode::Arm32 => arm32::scan_arm32(&region, ctx.seg_idx),
-            }
+            // Delegate to the mode-switch-aware helper which splits the shard
+            // at every ModeSwitch boundary, dispatching the correct ISA scanner
+            // (A32 or Thumb-2) for each sub-range.
+            scan_arm32_shard(seg, start_va, end_va, ctx)
         }
         (Arch::X86_64, Depth::Linear) => {
+            let region = ScanRegion::new(seg, start_va, end_va);
             x86_64::scan_linear(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
         }
         (Arch::X86_64, Depth::Paired) => {
+            let region = ScanRegion::new(seg, start_va, end_va);
             x86_64::scan_with_prop(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
         }
         (Arch::X86, _, ) => vec![],
@@ -573,14 +567,81 @@ fn scan_shard(
     }
 }
 
+/// Scan an ARM32 shard with full mode-switch awareness.
+///
+/// Splits `[start_va, end_va)` at every [`ModeSwitch`] boundary and dispatches
+/// [`arm32::scan_arm32`] or [`arm32::scan_thumb`] for each sub-range.  This
+/// ensures that a shard containing both A32 and Thumb-2 code — e.g. a section
+/// with a Thumb stub following an ARM32 function — is decoded correctly
+/// throughout instead of being run through a single mismatched scanner.
+///
+/// When no switches fall inside the shard the common fast path is taken: one
+/// scanner call over the full range.
+fn scan_arm32_shard(seg: &Segment, start_va: Va, end_va: Va, ctx: &ScanCtx<'_>) -> Vec<Xref> {
+    let arm32_seg = match &seg.arch {
+        SegmentArch::Arm32(a) => a,
+        // Defensive: no ARM32 metadata (raw binary or test fixture).
+        _ => {
+            let region = ScanRegion::new(seg, start_va, end_va);
+            return arm32::scan_arm32(&region, ctx.seg_idx);
+        }
+    };
+
+    let initial_mode = arm32_seg.mode_at(start_va);
+
+    // Switches strictly inside the shard: start_va < sw.va < end_va.
+    // `mode_at(start_va)` already accounts for any switch *at* start_va.
+    let lo = arm32_seg.switches.partition_point(|s| s.va <= start_va);
+    let hi = arm32_seg.switches.partition_point(|s| s.va < end_va);
+    let inner = &arm32_seg.switches[lo..hi];
+
+    if inner.is_empty() {
+        // Fast path: uniform ISA throughout this shard.
+        let region = ScanRegion::new(seg, start_va, end_va);
+        return match initial_mode {
+            DecodeMode::Thumb => arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base),
+            DecodeMode::Arm32 => arm32::scan_arm32(&region, ctx.seg_idx),
+        };
+    }
+
+    // General path: iterate over sub-ranges separated by ISA transitions.
+    let mut xrefs    = Vec::new();
+    let mut cur_va   = start_va;
+    let mut cur_mode = initial_mode;
+
+    for sw in inner {
+        if sw.va > cur_va {
+            let region = ScanRegion::new(seg, cur_va, sw.va);
+            let batch = match cur_mode {
+                DecodeMode::Thumb => arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base),
+                DecodeMode::Arm32 => arm32::scan_arm32(&region, ctx.seg_idx),
+            };
+            xrefs.extend(batch);
+        }
+        cur_va   = sw.va;
+        cur_mode = sw.mode;
+    }
+
+    // Final sub-range — extends to end_va (which includes the lookahead overlap).
+    if cur_va < end_va {
+        let region = ScanRegion::new(seg, cur_va, end_va);
+        let batch = match cur_mode {
+            DecodeMode::Thumb => arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base),
+            DecodeMode::Arm32 => arm32::scan_arm32(&region, ctx.seg_idx),
+        };
+        xrefs.extend(batch);
+    }
+
+    xrefs
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 #[allow(unused_must_use)] // Tests discard PassResult — only the collected xrefs matter.
 mod tests {
     use super::*;
-    use crate::loader::{Arch, DecodeMode, SegData, Segment};
-    use crate::loader::Arm32Segment;
+    use crate::loader::{Arch, SegData, Segment};
     use crate::xref::XrefKind;
     use ahash::AHashSet;
 
