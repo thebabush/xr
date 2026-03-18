@@ -107,6 +107,27 @@ compiler flags and a clean variety of code patterns.
 `.text` section yields ~750 000 labelled windows, so even 20 files gives
 ample training data.
 
+### Additional non-Debian sources
+
+Debian armhf/armel is the easiest starting point but risks training on a
+single toolchain (GCC + glibc).  Collect from additional sources to improve
+generalisation:
+
+| Source | Why useful |
+|---|---|
+| **Alpine Linux armv7** | musl libc, different struct layouts and calling conventions; `apk fetch` + extract dbg packages |
+| **Arch Linux ARM** (armv7h) | Aggressively optimised Thumb-2; ALARM mirror or a running Pi |
+| **Android AOSP** | Heavy Clang, NEON intrinsics, hand-written ARM32 asm in media codecs — covers the libamp.so failure case directly |
+| **FreeBSD ARM** | LLVM-only toolchain, different ABI |
+| **Buildroot** | Compile a root FS with `BR2_ARM_INSTRUCTION_SET=arm` vs `=thumb` for synthetic adversarial cases |
+
+**Windows ARM32 (PE)**: exists (WOW32 on ARM64 Windows, Windows IoT Core) but
+Microsoft uses Thumb-2 exclusively for user-mode code — no ARM32 (A32)
+instructions in practice, and PE has no mapping symbols.  Not useful for
+training.  If PE validation is desired, compile the same open-source code for
+both ELF (annotated via `$t`/`$a`) and PE, and use the ELF labels to verify
+the PE predictions — the byte-level features are format-agnostic.
+
 ### Extracting labels from mapping symbols
 
 ```python
