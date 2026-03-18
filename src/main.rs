@@ -166,11 +166,7 @@ fn extract_rust_string(
 ) -> Option<String> {
     let blob = blobs.lookup(to)?;
 
-    let ptr_size: usize = match binary.arch {
-        xr::Arch::X86_64 | xr::Arch::Arm64 => 8,
-        xr::Arch::X86 | xr::Arch::Arm32 => 4,
-        xr::Arch::Unknown => return None,
-    };
+    let ptr_size = binary.arch.pointer_size()?;
 
     let len = xr::rust::read_usize_at(binary, from + ptr_size as u64, ptr_size)?;
 

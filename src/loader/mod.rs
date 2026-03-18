@@ -44,6 +44,20 @@ pub enum Arch {
     Unknown,
 }
 
+impl Arch {
+    /// Pointer size in bytes for this architecture.
+    ///
+    /// Returns `None` for [`Arch::Unknown`] (raw/unrecognised binaries).
+    /// Callers that need a fallback can use `.unwrap_or(4)` or `.unwrap_or(8)`.
+    pub fn pointer_size(self) -> Option<usize> {
+        match self {
+            Self::X86_64 | Self::Arm64 => Some(8),
+            Self::X86 | Self::Arm32 => Some(4),
+            Self::Unknown => None,
+        }
+    }
+}
+
 /// Decode mode — some architectures have multiple modes active simultaneously.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeMode {
@@ -302,10 +316,13 @@ impl LoadedBinary {
     /// Construct a LoadedBinary directly from segments, for use in tests.
     #[cfg(test)]
     pub fn from_segments(arch: Arch, segments: Vec<Segment>) -> Self {
-        use std::io::Write;
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        tmp.write_all(&[0u8]).unwrap();
-        let mmap = unsafe { memmap2::Mmap::map(tmp.as_file()).unwrap() };
+        // An anonymous 1-byte mapping satisfies the `_mmap: Mmap` field without
+        // creating a temporary file on disk.  `MmapMut::map_anon` + `make_read_only`
+        // returns the same `Mmap` type that real loads produce.
+        let mmap = memmap2::MmapMut::map_anon(1)
+            .expect("anonymous mmap for test fixture")
+            .make_read_only()
+            .expect("make read-only");
         Self {
             arch,
             segments,

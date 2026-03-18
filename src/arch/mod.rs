@@ -112,16 +112,26 @@ pub(crate) struct SegmentIndex {
     entries: Vec<(Va, Va, SegFlags)>,
 }
 
-/// Warn (once per build) if sorted intervals overlap — binary search may give
-/// wrong results on malformed binaries.
+/// Warn if sorted intervals overlap — binary search may give wrong results on
+/// malformed binaries.  Only active in debug builds to avoid unexpected stderr
+/// output in production; overlapping segments are unusual and typically indicate
+/// a loader bug rather than a user-visible problem.
+#[cfg(debug_assertions)]
 fn check_disjoint<T, F: Fn(&T) -> (Va, Va)>(label: &str, entries: &[T], extract: F) {
     let overlaps = entries
         .windows(2)
         .any(|w| extract(&w[0]).1 > extract(&w[1]).0);
     if overlaps {
-        eprintln!("warning: {label}: overlapping segments detected (binary search may give wrong results)");
+        eprintln!(
+            "warning: {label}: overlapping segments detected \
+             (binary search may give wrong results)"
+        );
     }
 }
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+fn check_disjoint<T, F: Fn(&T) -> (Va, Va)>(_label: &str, _entries: &[T], _extract: F) {}
 
 impl SegmentIndex {
     pub(crate) fn build(segments: &[Segment]) -> Self {

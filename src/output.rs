@@ -39,14 +39,8 @@ pub fn truncate_middle(s: &str, max_width: usize) -> String {
     let right_len = available / 2;
 
     let left: String = s.chars().take(left_len).collect();
-    let right: String = s
-        .chars()
-        .rev()
-        .take(right_len)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
+    // Skip to the tail without collecting-and-reversing twice.
+    let right: String = s.chars().skip(char_count - right_len).collect();
 
     format!("{left}...{right}")
 }
@@ -228,7 +222,7 @@ impl Printer for JsonlPrinter {
         // Option<Vec<ContextLine>>), so serialisation should never fail.
         // Use `to_writer` to append directly into `buf` without an
         // intermediate String allocation.
-        if serde_json::to_writer(buf as &mut Vec<u8>, r).is_err() {
+        if serde_json::to_writer(&mut *buf, r).is_err() {
             // Defensive: write a placeholder so output isn't silently truncated.
             buf.extend_from_slice(b"{\"error\":\"serialization failed\"}");
         }

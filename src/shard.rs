@@ -18,9 +18,11 @@ pub fn worker_for(addr: u64, n_workers: usize) -> usize {
 /// Split an address range into N shards, each assigned to a worker.
 /// Returns (start_va, end_va) pairs — exclusive end.
 ///
-/// `insn_align`: instruction alignment in bytes. Shard start addresses are
-/// rounded up to this alignment so that fixed-width architectures (ARM64=4)
-/// always begin decoding on a valid instruction boundary. x86 is 1.
+/// `boundary_align`: alignment in bytes for shard start addresses.
+/// For code shards this is the instruction alignment (ARM64=4, x86=1) so
+/// that fixed-width decoders always begin on a valid instruction boundary.
+/// For data shards this is the pointer size so that byte-scan steps stay
+/// on pointer-aligned boundaries.
 ///
 /// We add `overlap` bytes of lookahead to each shard so that
 /// cross-boundary instruction pairs (e.g. ADRP at end of shard,
@@ -31,12 +33,12 @@ pub fn split_range(
     end: u64,
     n: usize,
     overlap: u64,
-    insn_align: u64,
+    boundary_align: u64,
 ) -> Vec<(u64, u64)> {
     if n == 0 || start >= end {
         return vec![];
     }
-    let align = insn_align.max(1);
+    let align = boundary_align.max(1);
     let total = end - start;
     let chunk = total.div_ceil(n as u64);
 

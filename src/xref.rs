@@ -86,19 +86,12 @@ impl Confidence {
 }
 
 impl XrefKind {
-    /// Short ASCII label used in text output, JSON serialisation, and benchmark scoring.
-    ///
-    /// `CondJump`, `IndirectCall`, and `IndirectJump` collapse to their direct
-    /// counterparts (`"jump"` / `"call"`) to match IDA Pro's output, which does not
-    /// distinguish conditionality or indirection in the xref kind label.  These three
-    /// variants are retained in the enum for internal use (e.g. `is_code_ref`) but are
-    /// effectively invisible in scored output — all scoring comparisons operate on
-    /// `name()` strings.
     /// The five canonical scoring categories.
     ///
     /// `CondJump`, `IndirectCall`, and `IndirectJump` collapse into their direct
     /// counterparts when scored (via [`scored_kind`](Self::scored_kind)), so they
-    /// are not listed here.
+    /// are not listed here.  See [`name()`](Self::name) for the collapsing rules
+    /// and string labels used in output and benchmarking.
     pub const SCORED_KINDS: &[XrefKind] = &[
         XrefKind::Call,
         XrefKind::Jump,

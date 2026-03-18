@@ -153,6 +153,8 @@ impl<'a> XrefPass<'a> {
     /// `ControlFlow::Break(())` to stop early.  When it breaks, in-flight
     /// shards finish but no new shards start, so the scan halts promptly
     /// (within one shard's worth of work).
+    #[must_use = "PassResult contains timing, byte counts, and xref statistics; \
+                  bind the return value or discard explicitly with `let _ =`"]
     pub fn run<F>(self, mut on_batch: F) -> PassResult
     where
         F: FnMut(&[Xref]) -> ControlFlow<()> + Send,
@@ -194,10 +196,7 @@ impl<'a> XrefPass<'a> {
             _ => 1,
         };
 
-        let ptr_size: usize = match arch {
-            Arch::X86_64 | Arch::Arm64 => 8,
-            _ => 4,
-        };
+        let ptr_size: usize = arch.pointer_size().unwrap_or(4);
 
         // Channel: workers send completed shard batches; main thread drains.
         let (tx, rx) = mpsc::channel::<Vec<Xref>>();
@@ -298,13 +297,27 @@ impl<'a> XrefPass<'a> {
             pie_base: self.binary.pie_base,
         };
 
-        // Cancellation flag: set by the drain thread when on_batch returns Break.
+        // Count distinct segments that will be scanned — computed here, before the
+        // shards are consumed by into_par_iter().  Uses segment VA as the identity
+        // key (each segment has a unique start VA).
+        let segments_scanned = {
+            let mut vas: Vec<Va> = code_shards
+                .iter()
+                .map(|s| s.seg.va)
+                .chain(data_shards.iter().map(|s| s.seg.va))
+                .collect();
+            vas.sort_unstable();
+            vas.dedup();
+            vas.len()
+        };
+
+        // Cancellation flag: set by the output thread when on_batch returns Break.
         // Workers check this before starting each shard — no new shards start once
         // set, but in-flight shards finish normally.
-        // Wrapped in Arc so it can be shared between the drain thread and the workers
-        // (which run inside pool.install on the current thread's stack).
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_workers = Arc::clone(&stop);
+        // Wrapped in Arc so it can be shared between the output thread, the drain
+        // relay thread, and the rayon workers.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_workers = Arc::clone(&cancelled);
 
         // Run workers and drain concurrently inside a thread scope so the drain
         // thread can borrow non-'static locals (on_batch, stop) while the workers
@@ -330,9 +343,14 @@ impl<'a> XrefPass<'a> {
                         confidence_counts.add(x.confidence);
                         xref_count += 1;
                     }
-                    let cf = on_batch(&batch);
-                    if cf.is_break() {
-                        stop.store(true, Ordering::Relaxed);
+                    if on_batch(&batch).is_break() {
+                        // Signal workers and drain to stop, then exit.  Dropping
+                        // `out_rx` (on closure return) closes the output channel so
+                        // any further `out_tx.send` calls in the drain thread return
+                        // `Err` and are silently discarded.  This keeps xref_count
+                        // accurate: only xrefs emitted before the Break are counted.
+                        cancelled.store(true, Ordering::Relaxed);
+                        break;
                     }
                 }
                 (xref_count, confidence_counts)
@@ -343,17 +361,19 @@ impl<'a> XrefPass<'a> {
             // This keeps the scan channel drained so workers never stall.
             let drain = s.spawn(|| {
                 for batch in rx {
-                    // Forward to output thread; blocks only when output_channel
-                    // is full (backpressure), not on format/write work.
-                    // If stop is set (output thread broke), drain silently to
-                    // unblock any workers still trying to send.
-                    if stop_workers.load(Ordering::Relaxed) {
-                        // Discard — output is done, just drain the scan channel.
+                    // Fast path: if the output thread already broke and closed
+                    // `out_rx`, skip the send entirely rather than paying the
+                    // cost of a failed channel operation.
+                    if cancelled_workers.load(Ordering::Relaxed) {
                         continue;
                     }
+                    // If the output thread exited early, `out_tx.send` returns
+                    // `Err`; the `let _ =` discards it so the drain loop
+                    // continues until `rx` is exhausted.
                     let _ = out_tx.send(batch);
                 }
-                // Drop out_tx so the output thread's channel closes.
+                // Drop out_tx so the output thread's channel closes (if it
+                // hasn't already exited via break).
                 drop(out_tx);
             });
 
@@ -395,7 +415,7 @@ impl<'a> XrefPass<'a> {
                 code_shards
                     .into_par_iter()
                     .for_each_with(tx.clone(), |tx, shard| {
-                        if stop_workers.load(Ordering::Relaxed) {
+                        if cancelled_workers.load(Ordering::Relaxed) {
                             return;
                         }
                         let mut batch = scan_shard(
@@ -418,7 +438,7 @@ impl<'a> XrefPass<'a> {
 
                 // Data shards (no overlap, no ownership trimming needed)
                 data_shards.into_par_iter().for_each_with(tx, |tx, shard| {
-                    if stop_workers.load(Ordering::Relaxed) {
+                    if cancelled_workers.load(Ordering::Relaxed) {
                         return;
                     }
                     let region = ScanRegion::new(shard.seg, shard.scan_start, shard.scan_end);
@@ -440,21 +460,25 @@ impl<'a> XrefPass<'a> {
             output.join().expect("output thread panicked")
         });
 
-        // Count only segments that were actually processed: executable segments
-        // (instruction scan) plus byte-scannable data segments (pointer scan).
-        // Summing all segment data would overstate work done by including BSS,
-        // .data.rel.ro, and other segments that are never fed to a scanner.
-        let bytes_scanned: u64 = self
-            .binary
-            .code_segments()
-            .map(|s| s.data().len() as u64)
-            .sum::<u64>()
-            + self
-                .binary
-                .scannable_data_segments()
+        // Bytes scanned: code segment bytes (zero for ByteScan — no instruction
+        // decoding runs) plus scannable data segment bytes.  Note: from_range
+        // filtering may mean only a portion of each segment was scanned; this
+        // reports the full segment sizes as an upper bound in that case.
+        let code_bytes: u64 = if depth == Depth::ByteScan {
+            0
+        } else {
+            self.binary
+                .code_segments()
                 .map(|s| s.data().len() as u64)
-                .sum::<u64>();
-        let segments_scanned = self.binary.segments.len();
+                .sum()
+        };
+        let data_bytes: u64 = self
+            .binary
+            .scannable_data_segments()
+            .map(|s| s.data().len() as u64)
+            .sum();
+        let bytes_scanned = code_bytes + data_bytes;
+        // `segments_scanned` was computed above, before the shards were consumed.
 
         PassResult {
             elapsed_ms: t0.elapsed().as_millis() as u64,
@@ -492,7 +516,11 @@ struct DataShard<'a> {
 struct ScanCtx<'a> {
     seg_idx: &'a SegmentIndex,
     data_idx: &'a SegmentDataIndex<'a>,
-    /// Known GOT slot VAs (from `LoadedBinary::got_slots`).
+    /// Known GOT / IAT slot VAs (from `LoadedBinary::got_slots`).
+    ///
+    /// Used by the x86-64 scanner to restrict `CALL [RIP+disp32]` /
+    /// `JMP [RIP+disp32]` xref emission to actual import-table slots.
+    /// Populated for ELF (GLOB_DAT / JUMP_SLOT) and PE (IAT); empty for Mach-O.
     got_slots: &'a rustc_hash::FxHashSet<Va>,
     /// PIE rebase offset applied to this binary's segments.
     /// Zero for non-PIE binaries and position-dependent executables.
@@ -552,6 +580,7 @@ fn scan_shard(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(unused_must_use)] // Tests discard PassResult — only the collected xrefs matter.
 mod tests {
     use super::*;
     use crate::loader::{Arch, DecodeMode, SegData, Segment};

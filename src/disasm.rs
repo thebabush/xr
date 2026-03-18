@@ -57,6 +57,9 @@ pub fn context(
     match arch {
         Arch::X86_64 | Arch::X86 => disasm_x86(seg, focus_raw, before, after),
         Arch::Arm64 => disasm_arm64(seg, focus_raw, before, after),
+        // ARM32 / Thumb disassembly is not yet implemented.
+        // Callers fall back to a hex dump via `ContextLine::data` when this
+        // returns an empty vec.
         _ => vec![],
     }
 }
