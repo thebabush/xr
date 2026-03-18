@@ -1,5 +1,5 @@
 use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
-use crate::loader::{Arch, DecodeMode};
+use crate::loader::{Arch, SegmentArch};
 use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
@@ -90,7 +90,7 @@ pub(super) fn parse_coff(
                 executable: exec,
                 readable: read,
                 writable: write,
-                mode: DecodeMode::Default,
+                arch: SegmentArch::Generic,
                 name,
                 byte_scannable,
             });
@@ -113,7 +113,7 @@ pub(super) fn parse_coff(
             executable: exec,
             readable: read,
             writable: write,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name,
             byte_scannable,
         });

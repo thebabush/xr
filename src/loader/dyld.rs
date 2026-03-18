@@ -1,5 +1,5 @@
 use super::{ParseResult, SegData, Segment};
-use crate::loader::{Arch, DecodeMode};
+use crate::loader::{Arch, SegmentArch};
 use crate::va::Va;
 use anyhow::{anyhow, Result};
 use dylex::DyldContext;
@@ -63,7 +63,7 @@ pub(super) fn parse_dyld_cache(path: &Path) -> Result<DyldParseResult> {
             readable: mapping.is_readable(),
             writable: mapping.is_writable(),
             byte_scannable: mapping.is_readable() && !mapping.is_executable(),
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: format!("DSC[{:#x}]", mapping.address),
         });
     }

@@ -2,7 +2,7 @@ use crate::arch::arm32;
 use crate::arch::arm64;
 use crate::arch::x86_64;
 use crate::arch::{self, ScanRegion, SegmentDataIndex, SegmentIndex};
-use crate::loader::{Arch, DecodeMode, LoadedBinary, Segment};
+use crate::loader::{Arch, DecodeMode, LoadedBinary, Segment, SegmentArch};
 use crate::shard::split_range;
 use crate::va::{Va, VaRange};
 use crate::xref::{Confidence, Xref};
@@ -539,41 +539,37 @@ fn scan_shard(
 ) -> Vec<Xref> {
     let region = ScanRegion::new(seg, start_va, end_va);
 
-    match (arch, seg.mode, depth) {
-        // ARM64 — always Default mode at this point (Thumb handled separately)
-        (Arch::Arm64, DecodeMode::Default, Depth::Linear) => {
+    match (arch, depth) {
+        (Arch::Arm64, Depth::Linear) => {
             arm64::scan_linear(&region, ctx.seg_idx)
         }
-        (Arch::Arm64, DecodeMode::Default, Depth::Paired) => {
+        (Arch::Arm64, Depth::Paired) => {
             arm64::scan_adrp(&region, ctx.seg_idx, ctx.data_idx)
         }
-        // ARM32 / Thumb
-        (Arch::Arm32, DecodeMode::Thumb, Depth::Linear | Depth::Paired) => {
-            arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base)
+        (Arch::Arm32, Depth::Linear | Depth::Paired) => {
+            // Look up the mode in effect at the shard's start address from
+            // the Arm32Segment switching table; fall back to ARM32 if the
+            // segment carries no arch-specific data (shouldn't happen after
+            // the loader, but be defensive).
+            let mode = match &seg.arch {
+                SegmentArch::Arm32(a) => a.mode_at(start_va),
+                _                     => DecodeMode::Arm32,
+            };
+            match mode {
+                DecodeMode::Thumb => arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base),
+                DecodeMode::Arm32 => arm32::scan_arm32(&region, ctx.seg_idx),
+            }
         }
-        (Arch::Arm32, DecodeMode::Arm32, Depth::Linear | Depth::Paired) => {
-            arm32::scan_arm32(&region, ctx.seg_idx)
-        }
-        // Default mode on an Arm32 binary shouldn't happen after the loader
-        // sets per-section modes, but fall back to Thumb (the common case).
-        (Arch::Arm32, DecodeMode::Default, Depth::Linear | Depth::Paired) => {
-            arm32::scan_thumb(&region, ctx.seg_idx, ctx.pie_base)
-        }
-        // Arm64 in Thumb/Arm32 mode is a loader bug — return empty.
-        (Arch::Arm64, DecodeMode::Thumb | DecodeMode::Arm32, _) => vec![],
-        // x86-64
-        (Arch::X86_64, _, Depth::Linear) => {
+        (Arch::X86_64, Depth::Linear) => {
             x86_64::scan_linear(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
         }
-        (Arch::X86_64, _, Depth::Paired) => {
+        (Arch::X86_64, Depth::Paired) => {
             x86_64::scan_with_prop(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
         }
-        // x86 32-bit — not yet implemented
-        (Arch::X86, _, _) => vec![],
-        (Arch::Unknown, _, _) => vec![],
-        // ByteScan never generates code shards — return empty rather than
-        // panicking, in case a future refactor accidentally routes here.
-        (_, _, Depth::ByteScan) => vec![],
+        (Arch::X86, _, ) => vec![],
+        (Arch::Unknown, _) => vec![],
+        // ByteScan never generates code shards.
+        (_, Depth::ByteScan) => vec![],
     }
 }
 
@@ -584,6 +580,7 @@ fn scan_shard(
 mod tests {
     use super::*;
     use crate::loader::{Arch, DecodeMode, SegData, Segment};
+    use crate::loader::Arm32Segment;
     use crate::xref::XrefKind;
     use ahash::AHashSet;
 
@@ -620,7 +617,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: false,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: "test_code".to_string(),
         }
     }
@@ -637,7 +634,7 @@ mod tests {
             readable: true,
             writable: true,
             byte_scannable: true,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: "test_data".to_string(),
         }
     }

@@ -725,7 +725,7 @@ fn gpr_index(reg: Register) -> Option<GprIdx> {
 mod tests {
     use super::*;
     use crate::arch::ScanRegion;
-    use crate::loader::{DecodeMode, SegData, Segment};
+    use crate::loader::{Arm32Segment, DecodeMode, SegData, Segment, SegmentArch};
     use crate::xref::{Confidence, XrefKind};
 
     fn fake_seg(va: u64, data: &'static [u8]) -> Segment {
@@ -736,7 +736,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: true,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: "test".to_string(),
         }
     }
@@ -749,7 +749,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: false,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: "test_data".to_string(),
         }
     }

@@ -3,7 +3,7 @@ pub mod arm64;
 pub mod arm64_decode;
 pub(crate) mod x86_64;
 
-use crate::loader::{DecodeMode, Segment};
+use crate::loader::Segment;
 use crate::va::Va;
 use crate::xref::{Confidence, Xref, XrefKind};
 
@@ -30,11 +30,6 @@ pub(crate) struct ScanRegion<'a> {
     pub seg_data: &'a [u8],
     /// Base VA of the containing segment.
     pub seg_va: Va,
-    /// Decode mode for this region (Default, Thumb, Arm32).
-    /// Carried for introspection; the pass dispatcher already selects the
-    /// right scanner based on mode before calling into arch code.
-    #[allow(dead_code)]
-    pub mode: DecodeMode,
 }
 
 impl<'a> ScanRegion<'a> {
@@ -52,7 +47,6 @@ impl<'a> ScanRegion<'a> {
             base_va: start_va,
             seg_data: seg.data(),
             seg_va: seg.va,
-            mode: seg.mode,
         }
     }
 }

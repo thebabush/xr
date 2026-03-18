@@ -4,7 +4,7 @@
 //! disassembled instructions centred on that address — similar to
 //! `grep -A / -B` for source code.
 
-use crate::loader::{Arch, DecodeMode, Segment};
+use crate::loader::{Arch, Segment};
 use crate::va::Va;
 
 /// A single disassembled instruction line.
@@ -55,7 +55,7 @@ pub fn context(
 
     let focus_raw = focus_va.raw();
     match arch {
-        Arch::X86_64 | Arch::X86 => disasm_x86(seg, focus_raw, before, after),
+        Arch::X86_64 | Arch::X86 => disasm_x86(arch, seg, focus_raw, before, after),
         Arch::Arm64 => disasm_arm64(seg, focus_raw, before, after),
         // ARM32 / Thumb disassembly is not yet implemented.
         // Callers fall back to a hex dump via `ContextLine::data` when this
@@ -66,7 +66,7 @@ pub fn context(
 
 // ── x86 / x86-64 ─────────────────────────────────────────────────────────────
 
-fn disasm_x86(seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<DisasmLine> {
+fn disasm_x86(arch: Arch, seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<DisasmLine> {
     use iced_x86::{
         Decoder, DecoderOptions, Formatter, FormatterOutput, FormatterTextKind, IntelFormatter,
     };
@@ -78,11 +78,7 @@ fn disasm_x86(seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<
         }
     }
 
-    let bitness: u32 = if seg.mode == DecodeMode::Default {
-        64
-    } else {
-        32
-    };
+    let bitness: u32 = if arch == Arch::X86_64 { 64 } else { 32 };
 
     let make_fmt = || {
         let mut fmt = IntelFormatter::new();
@@ -302,7 +298,7 @@ fn build_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loader::{DecodeMode, SegData, Segment};
+    use crate::loader::{Arch, SegData, Segment, SegmentArch};
 
     fn exec_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
@@ -312,7 +308,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: false,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: "test".to_string(),
         }
     }
@@ -332,7 +328,7 @@ mod tests {
     fn test_focus_only_no_context() {
         static CODE: [u8; 5] = [0xe8, 0xfb, 0x0f, 0x00, 0x00];
         let seg = exec_seg(0x1000, &CODE);
-        let lines = disasm_x86(&seg, 0x1000, 0, 0);
+        let lines = disasm_x86(Arch::X86_64, &seg, 0x1000, 0, 0);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].va, 0x1000);
         assert!(lines[0].is_focus);
@@ -346,7 +342,7 @@ mod tests {
     fn test_clean_before_context() {
         static CODE: [u8; 8] = [0x90, 0x90, 0x90, 0xe8, 0xf8, 0x0f, 0x00, 0x00];
         let seg = exec_seg(0x1000, &CODE);
-        let lines = disasm_x86(&seg, 0x1003, 3, 0);
+        let lines = disasm_x86(Arch::X86_64, &seg, 0x1003, 3, 0);
         let foc = focus(&lines).expect("focus must be present");
         assert_eq!(foc.va, 0x1003);
         let before: Vec<_> = lines.iter().filter(|l| l.va < 0x1003).collect();
@@ -364,7 +360,7 @@ mod tests {
     fn test_focus_at_segment_start() {
         static CODE: [u8; 5] = [0xe8, 0xf8, 0x0f, 0x00, 0x00];
         let seg = exec_seg(0x1000, &CODE);
-        let lines = disasm_x86(&seg, 0x1000, 3, 0);
+        let lines = disasm_x86(Arch::X86_64, &seg, 0x1000, 3, 0);
         assert!(!lines.is_empty(), "must return at least the focus line");
         let foc = focus(&lines).expect("focus must be present");
         assert_eq!(foc.va, 0x1000);
@@ -377,7 +373,7 @@ mod tests {
     fn test_fewer_before_than_requested() {
         static CODE: [u8; 6] = [0x90, 0xe8, 0xf4, 0x0e, 0x00, 0x00];
         let seg = exec_seg(0x1000, &CODE);
-        let lines = disasm_x86(&seg, 0x1001, 5, 0);
+        let lines = disasm_x86(Arch::X86_64, &seg, 0x1001, 5, 0);
         let foc = focus(&lines).expect("focus must be present");
         assert_eq!(foc.va, 0x1001);
         let before_count = lines.iter().filter(|l| l.va < 0x1001).count();
@@ -390,7 +386,7 @@ mod tests {
     fn test_after_context() {
         static CODE: [u8; 7] = [0xe8, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90];
         let seg = exec_seg(0x1000, &CODE);
-        let lines = disasm_x86(&seg, 0x1000, 0, 2);
+        let lines = disasm_x86(Arch::X86_64, &seg, 0x1000, 0, 2);
         assert_eq!(vas(&lines), vec![0x1000, 0x1005, 0x1006]);
         assert!(lines[0].is_focus);
     }
@@ -448,7 +444,7 @@ mod tests {
         let seg = exec_seg(0x5000, data);
         let focus_va = 0x503c_u64; // seg.va + 0x3c
 
-        let lines = disasm_x86(&seg, focus_va, 1, 0);
+        let lines = disasm_x86(Arch::X86_64, &seg, focus_va, 1, 0);
         let foc = focus(&lines).expect("focus must be present");
         assert_eq!(foc.va, focus_va);
         assert_eq!(foc.bytes[0], 0xe8, "focus must be the CALL");
@@ -484,7 +480,7 @@ mod tests {
             0x90, 0x90, 0x90, // padding
         ];
         let seg = exec_seg(0x5000, &CODE);
-        let lines = disasm_x86(&seg, 0x500a, 0, 2);
+        let lines = disasm_x86(Arch::X86_64, &seg, 0x500a, 0, 2);
         let foc = focus(&lines).expect("focus must be present");
         assert_eq!(foc.va, 0x500a);
         let after: Vec<_> = lines.iter().filter(|l| l.va > 0x500a).collect();
@@ -504,7 +500,7 @@ mod tests {
             0x00,
         ];
         let seg = exec_seg(0x5000, &CODE);
-        let lines = disasm_x86(&seg, 0x500a, 0, 0);
+        let lines = disasm_x86(Arch::X86_64, &seg, 0x500a, 0, 0);
         let foc = focus(&lines).expect("focus must be present");
         assert_eq!(foc.va, 0x500a);
         assert_eq!(

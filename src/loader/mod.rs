@@ -58,15 +58,73 @@ impl Arch {
     }
 }
 
-/// Decode mode — some architectures have multiple modes active simultaneously.
+// ── ARM32-specific segment data ───────────────────────────────────────────────
+
+/// ARM32 instruction-set mode — ARM32 (A32) or Thumb-2 (T32).
+///
+/// Only meaningful for ARM32 segments; other architectures do not have
+/// a runtime mode concept and use [`SegmentArch::Generic`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeMode {
-    /// Normal mode (ARM64, x86, x86-64)
-    Default,
-    /// ARM Thumb (2-byte aligned, mixed 16/32-bit instructions)
-    Thumb,
-    /// ARM32 classic (4-byte aligned)
+    /// ARM32 classic (A32): 4-byte aligned fixed-width instructions.
     Arm32,
+    /// Thumb-2 (T32): mixed 16/32-bit halfword instructions.
+    Thumb,
+}
+
+/// Mode-switching point within an ARM32 segment.
+///
+/// At `va` the instruction-set switches to `mode`.  Derived from ELF
+/// mapping symbols (`$t`/`$a`) for non-stripped binaries, or from the
+/// low bit of `STT_FUNC` symbol values (odd = Thumb, even = ARM32) for
+/// exported symbols in stripped binaries.
+#[derive(Debug, Clone, Copy)]
+pub struct ModeSwitch {
+    pub va:   Va,
+    pub mode: DecodeMode,
+}
+
+/// ARM32-specific data attached to a segment.
+///
+/// Stores the mode in effect at the segment start plus a sorted list of
+/// intra-segment mode transitions.  All other architectures use
+/// [`SegmentArch::Generic`] and carry no extra data.
+#[derive(Debug, Clone)]
+pub struct Arm32Segment {
+    /// Mode at the beginning of the segment (probe result or arch default).
+    pub default_mode: DecodeMode,
+    /// Sorted mode-switching points within this segment.
+    /// Derived from mapping symbols and function-symbol LSBs.
+    pub switches: Vec<ModeSwitch>,
+}
+
+impl Arm32Segment {
+    /// Construct a homogeneous segment — one mode throughout, no switches.
+    pub fn uniform(mode: DecodeMode) -> Self {
+        Self { default_mode: mode, switches: vec![] }
+    }
+
+    /// Return the decode mode in effect at `va`.
+    ///
+    /// Binary-searches `switches` for the last entry at or before `va`;
+    /// falls back to [`default_mode`](Self::default_mode) if none precedes it.
+    pub fn mode_at(&self, va: Va) -> DecodeMode {
+        let idx = self.switches.partition_point(|s| s.va <= va);
+        if idx == 0 { self.default_mode } else { self.switches[idx - 1].mode }
+    }
+}
+
+/// Architecture-specific data attached to a [`Segment`].
+///
+/// Only ARM32 carries extra per-segment metadata (mode-switching points).
+/// All other architectures use the [`Generic`](SegmentArch::Generic) variant
+/// which has zero size.
+#[derive(Debug, Clone)]
+pub enum SegmentArch {
+    /// No architecture-specific data (x86, x86-64, AArch64, unknown).
+    Generic,
+    /// ARM32 / Thumb-2 segment with mode-switching information.
+    Arm32(Arm32Segment),
 }
 
 /// Segment byte data with externally managed lifetime.
@@ -161,8 +219,9 @@ pub struct Segment {
     /// data that produces too many false-positive pointer hits without
     /// relocation-table context.
     pub byte_scannable: bool,
-    /// Decode mode for this segment (relevant for ARM).
-    pub mode: DecodeMode,
+    /// Architecture-specific segment metadata.
+    /// ARM32 segments carry mode-switching information; all others are Generic.
+    pub arch: SegmentArch,
     /// Human-readable name (e.g. "__TEXT", ".text", "LOAD[0]").
     pub name: String,
 }
@@ -445,7 +504,7 @@ fn parse_binary(
                 executable: true,
                 readable: true,
                 writable: false,
-                mode: DecodeMode::Default,
+                arch: SegmentArch::Generic,
                 name: "raw".to_string(),
                 byte_scannable: true,
             };

@@ -512,7 +512,7 @@ fn xref(from: Va, to: u64, kind: XrefKind) -> Xref {
 mod tests {
     use super::*;
     use crate::arch::SegmentIndex;
-    use crate::loader::{Arch, DecodeMode, LoadedBinary, SegData, Segment};
+    use crate::loader::{Arch, Arm32Segment, DecodeMode, LoadedBinary, SegData, Segment, SegmentArch};
     use crate::va::Va;
 
     fn make_exec_seg(va: u64, data: Vec<u8>) -> Segment {
@@ -524,7 +524,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: false,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: ".text".to_string(),
         }
     }
@@ -604,7 +604,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: false,
-            mode: DecodeMode::Thumb,
+            arch: SegmentArch::Arm32(Arm32Segment::uniform(DecodeMode::Thumb)),
             name: ".text".to_string(),
         }
     }

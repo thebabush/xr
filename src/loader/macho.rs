@@ -1,5 +1,5 @@
 use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
-use crate::loader::{Arch, DecodeMode, RelocPointer};
+use crate::loader::{Arch, RelocPointer, SegmentArch};
 use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
@@ -68,7 +68,7 @@ pub(super) fn parse_macho(
                 executable: exec,
                 readable: read,
                 writable: write,
-                mode: DecodeMode::Default,
+                arch: SegmentArch::Generic,
                 name: full_name,
                 byte_scannable,
             });

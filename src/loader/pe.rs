@@ -1,5 +1,5 @@
 use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
-use crate::loader::{Arch, DecodeMode, RelocPointer};
+use crate::loader::{Arch, RelocPointer, SegmentArch};
 use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
@@ -51,7 +51,7 @@ pub(super) fn parse_pe(
                     executable: exec,
                     readable: read,
                     writable: write,
-                    mode: DecodeMode::Default,
+                    arch: SegmentArch::Generic,
                     name,
                     byte_scannable: false,
                 });
@@ -70,7 +70,7 @@ pub(super) fn parse_pe(
                 executable: exec,
                 readable: read,
                 writable: write,
-                mode: DecodeMode::Default,
+                arch: SegmentArch::Generic,
                 name,
                 byte_scannable: false,
             });
@@ -96,7 +96,7 @@ pub(super) fn parse_pe(
                 executable: exec,
                 readable: read,
                 writable: write,
-                mode: DecodeMode::Default,
+                arch: SegmentArch::Generic,
                 name: format!("{name}[bss]"),
                 byte_scannable: false,
             });
@@ -109,7 +109,7 @@ pub(super) fn parse_pe(
             executable: exec,
             readable: read,
             writable: write,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name,
             byte_scannable: true,
         });

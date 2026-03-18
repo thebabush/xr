@@ -193,8 +193,11 @@ fn main() -> Result<()> {
             Arm32Mode::Auto  => unreachable!(),
         };
         for seg in &mut binary.segments {
-            if seg.executable {
-                seg.mode = forced;
+            if let xr::SegmentArch::Arm32(ref mut a) = seg.arch {
+                // Override both the default and clear any symbol-derived
+                // switching points — the user explicitly chose a single mode.
+                a.default_mode = forced;
+                a.switches.clear();
             }
         }
     }

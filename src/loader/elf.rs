@@ -1,5 +1,5 @@
 use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
-use crate::loader::{Arch, DecodeMode, RelocPointer};
+use crate::loader::{Arch, Arm32Segment, DecodeMode, ModeSwitch, RelocPointer, SegmentArch};
 use crate::va::Va;
 use anyhow::Result;
 use rustc_hash::FxHashSet;
@@ -32,12 +32,14 @@ use rustc_hash::FxHashSet;
 /// score ≤ 0.06 — a comfortable margin for a 50 % majority threshold.
 ///
 /// Returns `Arm32` if strictly more than half of the sampled words have top
-/// nibble `0xE`; `Thumb` otherwise.
+/// nibble `0xE`, and `Arm32` also when the evidence is ambiguous — ARM32 false
+/// negatives (missed branches) are cheaper than Thumb false positives
+/// (hundreds of spurious jumps from ARM32 words decoded as 16-bit halfwords).
 const PROBE_WORDS: usize = 16;
 
 fn probe_arm32_section_mode(file: &[u8], offset: usize, size: usize) -> DecodeMode {
     if size < 4 || offset + 4 > file.len() {
-        return DecodeMode::Thumb;
+        return DecodeMode::Arm32;
     }
     let available = size.min(file.len().saturating_sub(offset));
     let n = (available / 4).min(PROBE_WORDS);
@@ -53,9 +55,11 @@ fn probe_arm32_section_mode(file: &[u8], offset: usize, size: usize) -> DecodeMo
         })
         .count();
 
-    // Strict majority: more than half of the sampled words carry the ARM32
-    // "always" condition in their top nibble.
-    if arm32_votes * 2 > n {
+    // ARM32 is the default: decoding ARM32 as Thumb produces hundreds of
+    // spurious branch xrefs (every 0xE... word's low halfword looks like B T2);
+    // the reverse only misses some branches.  Require a clear Thumb majority
+    // (more than half of sampled words with top nibble != 0xE) to override.
+    if arm32_votes * 2 >= n {
         DecodeMode::Arm32
     } else {
         DecodeMode::Thumb
@@ -98,8 +102,9 @@ pub(super) fn parse_elf(
         name: String,
         byte_scannable: bool,
         is_code: bool,
-        /// Per-section decode mode (Thumb vs ARM32 for ARM32 ELF; Default otherwise).
-        mode: DecodeMode,
+        /// Per-section decode mode — only meaningful for ARM32 ELF.
+        /// Ignored when building non-ARM32 segments.
+        arm32_mode: DecodeMode,
     }
     let mut section_infos: Vec<SectionInfo> = Vec::new();
     for sh in &elf.section_headers {
@@ -124,15 +129,15 @@ pub(super) fn parse_elf(
                 name: name.to_string(),
                 byte_scannable: !NO_SCAN_SECTIONS.contains(&name),
                 is_code,
-                mode: DecodeMode::Default, // filled in below for ARM32
+                arm32_mode: DecodeMode::Arm32, // filled in below; irrelevant for non-ARM32
             });
         }
     }
     section_infos.sort_by_key(|s| s.va);
 
-    // For ARM32 ELF, assign per-section Thumb vs ARM32 decode mode.
-    // For all other architectures keep DecodeMode::Default.
-    let default_mode = if arch == Arch::Arm32 {
+    // For ARM32 ELF, assign per-section decode modes from mapping symbols or
+    // the byte probe.  For all other architectures the field is unused.
+    let arm32_default_mode = if arch == Arch::Arm32 {
         // Collect ELF mapping symbols ($t = Thumb, $a = ARM32).
         // These are local STT_NOTYPE symbols present in non-stripped binaries.
         let mut map_syms: Vec<(u64, DecodeMode)> = elf
@@ -154,33 +159,24 @@ pub(super) fn parse_elf(
 
         if !map_syms.is_empty() {
             map_syms.sort_unstable_by_key(|e| e.0);
-            // Assign each section's mode from the last mapping symbol at or
-            // before its start address.
             for si in &mut section_infos {
                 let idx = map_syms.partition_point(|e| e.0 <= si.va);
-                si.mode = if idx > 0 {
+                si.arm32_mode = if idx > 0 {
                     map_syms[idx - 1].1
                 } else {
-                    DecodeMode::Thumb // default if no mapping symbol precedes
+                    DecodeMode::Arm32 // no mapping symbol precedes → ARM32
                 };
             }
-            DecodeMode::Thumb // used for unsectioned LOAD fallback
         } else {
-            // Stripped binary: majority-vote probe over the first 16 words of
-            // each section (see `probe_arm32_section_mode`).
-            // Correctly classifies:
-            //   armel (soft-float):  .text / .init / .plt → all ARM32
-            //   armhf (hard-float):  .init / .plt → ARM32, .text → Thumb
+            // Stripped binary: majority-vote probe over the first 16 words.
             for si in &mut section_infos {
-                si.mode = probe_arm32_section_mode(bytes, si.file_offset, si.file_size);
+                si.arm32_mode =
+                    probe_arm32_section_mode(bytes, si.file_offset, si.file_size);
             }
-            DecodeMode::Thumb // fallback for unsectioned LOAD regions
         }
+        DecodeMode::Arm32 // fallback for unsectioned LOAD regions
     } else {
-        for si in &mut section_infos {
-            si.mode = DecodeMode::Default;
-        }
-        DecodeMode::Default
+        DecodeMode::Arm32 // value unused for non-ARM32 arches
     };
 
     use goblin::elf::header::ET_DYN;
@@ -245,7 +241,11 @@ pub(super) fn parse_elf(
                         readable: read,
                         writable: write,
                         byte_scannable: sec.byte_scannable,
-                        mode: sec.mode,
+                        arch: if arch == Arch::Arm32 && sec.is_code {
+                            SegmentArch::Arm32(Arm32Segment::uniform(sec.arm32_mode))
+                        } else {
+                            SegmentArch::Generic
+                        },
                         name: sec.name.clone(),
                     });
                 }
@@ -260,7 +260,7 @@ pub(super) fn parse_elf(
                         readable: read,
                         writable: write,
                         byte_scannable: false,
-                        mode: default_mode,
+                        arch: SegmentArch::Generic,
                         name: format!("BSS[{:#x}]", last_end),
                     });
                 }
@@ -285,7 +285,11 @@ pub(super) fn parse_elf(
                     readable: read,
                     writable: write,
                     byte_scannable,
-                    mode: default_mode,
+                    arch: if arch == Arch::Arm32 && exec {
+                        SegmentArch::Arm32(Arm32Segment::uniform(arm32_default_mode))
+                    } else {
+                        SegmentArch::Generic
+                    },
                     name: format!("LOAD[{:#x}]", ph_va),
                 });
             }
@@ -302,9 +306,52 @@ pub(super) fn parse_elf(
                 readable: read,
                 writable: write,
                 byte_scannable: false,
-                mode: default_mode,
+                arch: SegmentArch::Generic,
                 name: format!("BSS[{:#x}]", bss_va),
             });
+        }
+    }
+
+    // ── ARM32: apply function-symbol mode switches ────────────────────────
+    // For each STT_FUNC symbol, the low bit of st_value encodes the ISA:
+    // odd address = Thumb, even = ARM32.  This is the same signal IDA reads.
+    // We collect from both .symtab (non-stripped) and .dynsym (always present)
+    // and attach the resulting ModeSwitch list to each ARM32 segment.
+    if arch == Arch::Arm32 {
+        use goblin::elf::sym::STT_FUNC;
+        let mut func_switches: Vec<(Va, DecodeMode)> = elf
+            .syms
+            .iter()
+            .chain(elf.dynsyms.iter())
+            .filter(|sym| {
+                sym.st_value != 0
+                    && sym.st_type() == STT_FUNC
+                    && sym.st_shndx != 0 // SHN_UNDEF — skip imports
+            })
+            .map(|sym| {
+                let va   = Va::new((sym.st_value & !1) + pie_base);
+                let mode = if sym.st_value & 1 == 1 { DecodeMode::Thumb }
+                           else                      { DecodeMode::Arm32 };
+                (va, mode)
+            })
+            .collect();
+
+        func_switches.sort_unstable_by_key(|&(va, _)| va);
+        func_switches.dedup_by_key(|(va, _)| *va);
+
+        for seg in &mut segments {
+            let seg_va  = seg.va;
+            let seg_end = Va::new(seg.va.raw() + seg.data().len() as u64);
+            if let SegmentArch::Arm32(ref mut arm32) = seg.arch {
+                let sw: Vec<ModeSwitch> = func_switches
+                    .iter()
+                    .filter(|&&(va, _)| va >= seg_va && va < seg_end)
+                    .map(|&(va, mode)| ModeSwitch { va, mode })
+                    .collect();
+                if !sw.is_empty() {
+                    arm32.switches = sw;
+                }
+            }
         }
     }
 

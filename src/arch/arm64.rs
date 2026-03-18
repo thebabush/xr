@@ -999,7 +999,7 @@ fn immediate_xref(insn: Arm64Insn, va: Va, idx: &SegmentIndex) -> Option<Xref> {
 mod tests {
     use super::*;
     use crate::arch::{ScanRegion, SegmentDataIndex};
-    use crate::loader::{DecodeMode, SegData, Segment};
+    use crate::loader::{Arm32Segment, DecodeMode, SegData, Segment, SegmentArch};
     use crate::xref::{Confidence, XrefKind};
 
     /// Build a fake executable segment covering exactly the given bytes at `base_va`.
@@ -1011,7 +1011,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: true,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: "test".to_string(),
         }
     }
@@ -1025,7 +1025,7 @@ mod tests {
             readable: true,
             writable: false,
             byte_scannable: false,
-            mode: DecodeMode::Default,
+            arch: SegmentArch::Generic,
             name: "rodata".to_string(),
         }
     }
@@ -1158,7 +1158,7 @@ mod tests {
                 readable: true,
                 writable: false,
                 byte_scannable: false,
-                mode: DecodeMode::Default,
+                arch: SegmentArch::Generic,
                 name: "data".to_string(),
             },
         ];
