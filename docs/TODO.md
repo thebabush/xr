@@ -67,8 +67,3 @@
   `confidence_counts` fields could replace the manual `Instant` timing
   and provide a per-confidence breakdown in the benchmark output.
   (`src/bin/benchmark.rs`)
-
-- [ ] `Confidence::COUNT` is a manual constant (`5`) that must stay in
-  sync with the enum variants. A `const { ... }` block deriving the
-  count from `Confidence::ALL.len()` would make it self-maintaining.
-  (`src/xref.rs`)

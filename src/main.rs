@@ -8,13 +8,13 @@ use xr::output::{
 };
 use xr::rust::StringBlobIndex;
 use xr::va::VaRange;
-use xr::xref::XrefKind;
+use xr::xref::{Confidence, XrefKind};
 use xr::{Depth, LoadedBinary, PassConfig, Va, XrefPass};
 
 /// Capacity for the stdout BufWriter (4 MiB).
 ///
-/// Batches are pre-formatted in parallel then flushed in one `write_all` call.
-/// A large buffer avoids frequent syscalls on high-throughput output.
+/// Each batch is formatted sequentially then written in a single `write_all` call,
+/// amortising syscall overhead on high-throughput output.
 const STDOUT_BUF_CAPACITY: usize = 4 * 1024 * 1024;
 
 #[derive(Parser)]
@@ -321,9 +321,14 @@ fn main() -> Result<()> {
                     None
                 };
 
-                // Extract Rust string if this is a data_ptr into a string blob
+                // Extract Rust string if this is a byte-scanned data_ptr into a string blob.
+                // Only ByteScan xrefs have `from` pointing at an actual {ptr, len} data
+                // slot; instruction-derived DataPointers (ADRP, LEA) have `from` at an
+                // instruction VA where `from + ptr_size` reads code bytes, not a length.
                 let rust_string = if let Some(ref blobs) = blob_index {
-                    if x.kind.scored_kind() == XrefKind::DataPointer {
+                    if x.kind.scored_kind() == XrefKind::DataPointer
+                        && x.confidence == Confidence::ByteScan
+                    {
                         extract_rust_string(&binary, blobs, x.from, x.to)
                             .map(|s| truncate_middle(&s, cli.rust_string_max))
                     } else {

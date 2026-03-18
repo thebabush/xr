@@ -69,6 +69,7 @@ pub fn context(
 fn disasm_x86(arch: Arch, seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<DisasmLine> {
     use iced_x86::{
         Decoder, DecoderOptions, Formatter, FormatterOutput, FormatterTextKind, IntelFormatter,
+        Instruction,
     };
 
     struct Buf(String);
@@ -150,7 +151,9 @@ fn disasm_x86(arch: Arch, seg: &Segment, focus_va: u64, before: usize, after: us
         }
 
         // Try all lengths from MAX down to 1; keep the largest valid one.
-        let mut best_len: Option<usize> = None;
+        // Cache the decoded Instruction (Copy type) so the match arm below can
+        // format it directly without a second decode pass.
+        let mut best: Option<(usize, Instruction)> = None;
         let max_try = cursor_off.min(MAX_X86_INSN);
 
         for try_len in (1..=max_try).rev() {
@@ -167,23 +170,18 @@ fn disasm_x86(arch: Arch, seg: &Segment, focus_va: u64, before: usize, after: us
             if insn.len() == try_len {
                 // This length is consistent: a `try_len`-byte instruction at probe_off
                 // ends exactly at cursor_off.
-                best_len = Some(try_len);
+                best = Some((try_len, insn));
                 break; // largest valid length found
             }
         }
 
-        match best_len {
+        match best {
             None => break, // no valid instruction found — stop
-            Some(len) => {
+            Some((len, insn)) => {
                 let probe_off = cursor_off - len;
                 let probe_va = seg.va + probe_off as u64;
-                let end_off = (probe_off + MAX_X86_INSN).min(seg.data().len());
-                let slice = &seg.data()[probe_off..end_off];
-                let mut dec =
-                    Decoder::with_ip(bitness, slice, probe_va.raw(), DecoderOptions::NONE);
+                let raw = seg.data()[probe_off..probe_off + len].to_vec();
                 let mut fmt = make_fmt();
-                let insn = dec.decode();
-                let raw = slice[..insn.len()].to_vec();
                 let mut buf = Buf(String::new());
                 fmt.format(&insn, &mut buf);
                 before_context.push(DecodedInsn {

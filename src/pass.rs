@@ -169,10 +169,22 @@ impl<'a> XrefPass<'a> {
             self.config.workers
         };
 
-        let pool = rayon::ThreadPoolBuilder::new()
+        let pool = match rayon::ThreadPoolBuilder::new()
             .num_threads(n_workers)
             .build()
-            .expect("failed to build thread pool");
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: failed to build rayon thread pool: {e}");
+                return PassResult {
+                    elapsed_ms: t0.elapsed().as_millis() as u64,
+                    segments_scanned: 0,
+                    bytes_scanned: 0,
+                    xref_count: 0,
+                    confidence_counts: ConfidenceCounts::default(),
+                };
+            }
+        };
 
         let all_segs = &self.binary.segments;
         let arch = self.binary.arch;
@@ -560,7 +572,7 @@ fn scan_shard(
             let region = ScanRegion::new(seg, start_va, end_va);
             x86_64::scan_with_prop(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
         }
-        (Arch::X86, _, ) => vec![],
+        (Arch::X86, _) => vec![],
         (Arch::Unknown, _) => vec![],
         // ByteScan never generates code shards.
         (_, Depth::ByteScan) => vec![],
@@ -580,10 +592,20 @@ fn scan_shard(
 fn scan_arm32_shard(seg: &Segment, start_va: Va, end_va: Va, ctx: &ScanCtx<'_>) -> Vec<Xref> {
     let arm32_seg = match &seg.arch {
         SegmentArch::Arm32(a) => a,
-        // Defensive: no ARM32 metadata (raw binary or test fixture).
+        // This branch is unreachable in production: scan_arm32_shard is only called
+        // from scan_shard when arch == Arch::Arm32, and every Arm32 loader produces
+        // SegmentArch::Arm32 segments.  Guard with debug_assert so misuse surfaces
+        // immediately in tests without silently applying the wrong decoder.
         _ => {
-            let region = ScanRegion::new(seg, start_va, end_va);
-            return arm32::scan_arm32(&region, ctx.seg_idx);
+            debug_assert!(
+                false,
+                "scan_arm32_shard: segment '{}' at {:#x} has {:?}, expected Arm32; \
+                 skipping (no xrefs produced)",
+                seg.name,
+                seg.va,
+                seg.arch,
+            );
+            return vec![];
         }
     };
 
