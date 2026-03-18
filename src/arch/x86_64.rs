@@ -755,7 +755,7 @@ mod tests {
     }
 
     fn region_for<'a>(seg: &'a Segment) -> ScanRegion<'a> {
-        ScanRegion::new(seg, seg.va, seg.va + seg.data.len() as u64)
+        ScanRegion::new(seg, seg.va, seg.va + seg.data().len() as u64)
     }
 
     // ── CALL rel32 ────────────────────────────────────────────────────────────

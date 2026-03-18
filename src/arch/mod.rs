@@ -46,7 +46,7 @@ impl<'a> ScanRegion<'a> {
             seg.va,
         );
         let offset = (start_va - seg.va) as usize;
-        let len = ((end_va - start_va) as usize).min(seg.data.len() - offset);
+        let len = ((end_va - start_va) as usize).min(seg.data().len() - offset);
         Self {
             data: &seg.data()[offset..offset + len],
             base_va: start_va,
@@ -127,11 +127,10 @@ impl SegmentIndex {
     pub(crate) fn build(segments: &[Segment]) -> Self {
         let mut entries: Vec<(Va, Va, SegFlags)> = segments
             .iter()
-            .map(|s| (s.va, s.va + s.data.len() as u64, segment_flags(s)))
+            .map(|s| (s.va, s.va + s.data().len() as u64, segment_flags(s)))
             .collect();
         entries.sort_unstable_by_key(|e| e.0);
-        // Overlap check is done once in SegmentDataIndex::build (built from
-        // the same segments), no need to duplicate the warning here.
+        check_disjoint("SegmentIndex", &entries, |e| (e.0, e.1));
         Self { entries }
     }
 
@@ -199,7 +198,7 @@ impl<'a> SegmentDataIndex<'a> {
             .iter()
             .map(|s| DataIndexEntry {
                 start: s.va,
-                end: s.va + s.data.len() as u64,
+                end: s.va + s.data().len() as u64,
                 flags: segment_flags(s),
                 data: s.data(),
             })

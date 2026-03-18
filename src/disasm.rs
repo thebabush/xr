@@ -91,8 +91,8 @@ fn disasm_x86(seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<
     let seg_offset = (focus_va - seg.va.raw()) as usize;
 
     // ── Step 1: anchor-decode focus + after context from focus_va ────────────
-    let anchor_end_off = (seg_offset + (after + 2) * 15).min(seg.data.len());
-    let anchor_data = &seg.data[seg_offset..anchor_end_off];
+    let anchor_end_off = (seg_offset + (after + 2) * 15).min(seg.data().len());
+    let anchor_data = &seg.data()[seg_offset..anchor_end_off];
     let mut anchor_dec = Decoder::with_ip(bitness, anchor_data, focus_va, DecoderOptions::NONE);
     let mut anchor_fmt = make_fmt();
 
@@ -158,8 +158,8 @@ fn disasm_x86(seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<
             let probe_off = cursor_off - try_len;
             let probe_va = seg.va + probe_off as u64;
             // Decode exactly one instruction from probe_off.
-            let end_off = (probe_off + MAX_X86_INSN).min(seg.data.len());
-            let slice = &seg.data[probe_off..end_off];
+            let end_off = (probe_off + MAX_X86_INSN).min(seg.data().len());
+            let slice = &seg.data()[probe_off..end_off];
             let mut dec = Decoder::with_ip(bitness, slice, probe_va.raw(), DecoderOptions::NONE);
             if !dec.can_decode() {
                 continue;
@@ -178,8 +178,8 @@ fn disasm_x86(seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<
             Some(len) => {
                 let probe_off = cursor_off - len;
                 let probe_va = seg.va + probe_off as u64;
-                let end_off = (probe_off + MAX_X86_INSN).min(seg.data.len());
-                let slice = &seg.data[probe_off..end_off];
+                let end_off = (probe_off + MAX_X86_INSN).min(seg.data().len());
+                let slice = &seg.data()[probe_off..end_off];
                 let mut dec =
                     Decoder::with_ip(bitness, slice, probe_va.raw(), DecoderOptions::NONE);
                 let mut fmt = make_fmt();
@@ -244,8 +244,8 @@ fn disasm_arm64(seg: &Segment, focus_va: u64, before: usize, after: usize) -> Ve
     let scan_start_va = seg.va + scan_start_off as u64;
 
     let total = before + 1 + after;
-    let scan_end_off = (scan_start_off + total * 4).min(seg.data.len());
-    let data = &seg.data[scan_start_off..scan_end_off];
+    let scan_end_off = (scan_start_off + total * 4).min(seg.data().len());
+    let data = &seg.data()[scan_start_off..scan_end_off];
 
     let mut all: Vec<DecodedInsn> = Vec::new();
     for (i, chunk) in data.chunks_exact(4).enumerate() {

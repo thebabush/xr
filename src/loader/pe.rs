@@ -1,4 +1,4 @@
-use super::{alloc_bss, ParseResult, SegData, Segment, Symbol, VaRangeSet};
+use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
 use crate::loader::{Arch, DecodeMode, RelocPointer};
 use crate::va::Va;
 use anyhow::Result;
@@ -165,7 +165,7 @@ fn build_pe_pdata_xrefs(
     };
 
     let sec_map = PeSectionMap::build(pe);
-    let seg_set = VaRangeSet::build(segments);
+    let is_mapped = |va: Va| segments.iter().any(|s| s.contains(va));
 
     let dir_rva = dd.virtual_address;
     let dir_size = dd.size;
@@ -204,7 +204,7 @@ fn build_pe_pdata_xrefs(
         for rva in [begin_rva, end_rva, unwind_rva & !1u32] {
             if rva != 0 {
                 let target = Va::new(image_base + rva as u64);
-                if seg_set.contains(target) {
+                if is_mapped(target) {
                     out.push(RelocPointer { from, to: target });
                 }
             }
@@ -212,7 +212,7 @@ fn build_pe_pdata_xrefs(
     }
 
     build_pe_unwind_handler_xrefs(
-        bytes, image_base, dir_rva, dir_size, &sec_map, &seg_set, out,
+        bytes, image_base, dir_rva, dir_size, &sec_map, &is_mapped, out,
     );
 }
 
@@ -222,7 +222,7 @@ fn build_pe_unwind_handler_xrefs(
     pdata_rva: u32,
     pdata_size: u32,
     sec_map: &PeSectionMap,
-    seg_set: &VaRangeSet,
+    is_mapped: &impl Fn(Va) -> bool,
     out: &mut Vec<RelocPointer>,
 ) {
     const UNW_FLAG_EHANDLER: u8 = 0x01;
@@ -279,7 +279,7 @@ fn build_pe_unwind_handler_xrefs(
             continue;
         }
         let target = Va::new(image_base + handler_rva as u64);
-        if !seg_set.contains(target) {
+        if !is_mapped(target) {
             continue;
         }
 
@@ -355,7 +355,7 @@ fn build_pe_reloc_pointers(
     image_base: u64,
     segments: &[Segment],
 ) -> Vec<RelocPointer> {
-    let seg_set = VaRangeSet::build(segments);
+    let is_mapped = |va: Va| segments.iter().any(|s| s.contains(va));
     let sec_map = PeSectionMap::build(pe);
 
     let mut result = Vec::new();
@@ -397,7 +397,7 @@ fn build_pe_reloc_pointers(
                         let slot_rva = page_rva + offset as u32;
                         let slot_va = image_base + slot_rva as u64;
                         if let Some(ptr_val) = sec_map.read_u64_at_rva(bytes, slot_rva) {
-                            if ptr_val != 0 && seg_set.contains(Va::new(ptr_val)) {
+                            if ptr_val != 0 && is_mapped(Va::new(ptr_val)) {
                                 result.push(RelocPointer {
                                     from: Va::new(slot_va),
                                     to: Va::new(ptr_val),

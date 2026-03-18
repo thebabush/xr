@@ -1,4 +1,4 @@
-use super::{alloc_bss, ParseResult, SegData, Segment, Symbol, VaRangeSet};
+use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
 use crate::loader::{Arch, DecodeMode, RelocPointer};
 use crate::va::Va;
 use anyhow::Result;
@@ -252,7 +252,7 @@ fn build_macho_fixup_pointers(
 ) -> Vec<RelocPointer> {
     use goblin::mach::load_command::CommandVariant;
 
-    let seg_set = VaRangeSet::build(segments);
+    let is_mapped = |va: Va| segments.iter().any(|s| s.contains(va));
 
     // Build a map from segment index → segment vmaddr so we can convert
     // chain offsets (which are file offsets within a segment) to VAs.
@@ -362,7 +362,7 @@ fn build_macho_fixup_pointers(
                     // segment_offset is the segment's file offset.
                     let offset_in_seg = chain_off as u64 - segment_offset;
                     let slot_va = Va::new(seg_vmaddr + offset_in_seg);
-                    if seg_set.contains(target_va) {
+                    if is_mapped(target_va) {
                         result.push(RelocPointer {
                             from: slot_va,
                             to: target_va,

@@ -1,4 +1,4 @@
-use super::{alloc_bss, ParseResult, SegData, Segment, Symbol, VaRangeSet};
+use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
 use crate::loader::{Arch, DecodeMode, RelocPointer};
 use crate::va::Va;
 use anyhow::Result;
@@ -419,7 +419,9 @@ fn build_elf_reloc_pointers(
             .map(u32::from_le_bytes)
     };
 
-    let seg_set = VaRangeSet::build(segments);
+    // Simple linear membership test over the (small) segment list.
+    // Called once per relocation entry during load; O(n_segments) is fine.
+    let is_mapped = |va: Va| segments.iter().any(|s| s.contains(va));
     let mut result = Vec::new();
 
     for rel in elf.dynrelas.iter().chain(elf.dynrels.iter()) {
@@ -429,14 +431,14 @@ fn build_elf_reloc_pointers(
         if r_type == R_X86_64_RELATIVE || r_type == R_AARCH64_RELATIVE {
             // RELA: explicit addend encodes the pre-link target.
             let target = Va::new((rel.r_addend.unwrap_or(0) as u64).wrapping_add(pie_base));
-            if seg_set.contains(target) {
+            if is_mapped(target) {
                 result.push(RelocPointer { from: Va::new(from), to: target });
             }
         } else if r_type == R_ARM_RELATIVE {
             // REL: the word at *place in the file IS the pre-link target VMA.
             if let Some(addend) = read_u32_at(rel.r_offset) {
                 let target = Va::new((addend as u64).wrapping_add(pie_base));
-                if seg_set.contains(target) {
+                if is_mapped(target) {
                     result.push(RelocPointer { from: Va::new(from), to: target });
                 }
             }
@@ -453,7 +455,7 @@ fn build_elf_reloc_pointers(
                             .wrapping_add(pie_base)
                             .wrapping_add(rel.r_addend.unwrap_or(0) as u64),
                     );
-                    if seg_set.contains(target) {
+                    if is_mapped(target) {
                         result.push(RelocPointer { from: Va::new(from), to: target });
                     }
                 }
@@ -472,7 +474,7 @@ fn build_elf_reloc_pointers(
                             .wrapping_add(pie_base)
                             .wrapping_add(implicit_addend as u64),
                     );
-                    if seg_set.contains(target) {
+                    if is_mapped(target) {
                         result.push(RelocPointer { from: Va::new(from), to: target });
                     }
                 }

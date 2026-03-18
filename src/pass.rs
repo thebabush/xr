@@ -215,7 +215,7 @@ impl<'a> XrefPass<'a> {
             self.binary
                 .code_segments()
                 .flat_map(|seg| {
-                    let seg_end = seg.va + seg.data.len() as u64;
+                    let seg_end = seg.va + seg.data().len() as u64;
                     // Clamp to from_range before sharding — segments with no overlap
                     // produce an empty shard list and are skipped entirely.
                     let (scan_start, scan_end) = match from_range {
@@ -255,7 +255,7 @@ impl<'a> XrefPass<'a> {
             self.binary
                 .scannable_data_segments()
                 .flat_map(|seg| {
-                    let seg_end = seg.va + seg.data.len() as u64;
+                    let seg_end = seg.va + seg.data().len() as u64;
                     // Clamp to from_range (data pointers are emitted at their source VA).
                     let (scan_start, scan_end) = match from_range {
                         Some(r) => (seg.va.max(r.start), seg_end.min(r.end)),

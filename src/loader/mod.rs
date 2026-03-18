@@ -131,8 +131,10 @@ pub struct Segment {
     pub va: Va,
     /// Raw bytes — a [`SegData`] wrapping a slice into the mmap (zero-copy).
     ///
-    /// Access via [`data()`](Self::data): `seg.data().len()`, `&seg.data()[range]`, etc.
-    /// The resulting `&[u8]` lifetime is tied to `&seg`, not `'static`.
+    /// `pub(crate)` for in-crate struct-literal construction only.
+    /// All read access (within and outside the crate) must go through
+    /// [`data()`](Self::data), which returns `&[u8]`.  Do not add new
+    /// call sites that dereference this field directly.
     pub(crate) data: SegData,
     /// Whether this segment contains executable code.
     pub executable: bool,
@@ -393,33 +395,6 @@ fn alloc_bss(size: usize, bufs: &mut Vec<Box<[u8]>>) -> SegData {
     // (ultimately in `LoadedBinary::_bss_bufs`). The struct drops `_bss_bufs`
     // after `segments`, so the SegData outlives all Segment references.
     unsafe { SegData::new(std::slice::from_raw_parts(ptr, size)) }
-}
-
-/// Sorted VA range set for O(log n) containment checks.
-struct VaRangeSet {
-    /// Sorted by start VA; assumed disjoint (same invariant as SegmentIndex).
-    ranges: Vec<(Va, Va)>,
-}
-
-impl VaRangeSet {
-    fn build(segments: &[Segment]) -> Self {
-        let mut ranges: Vec<(Va, Va)> = segments
-            .iter()
-            .map(|s| (s.va, s.va + s.data.len() as u64))
-            .collect();
-        ranges.sort_unstable_by_key(|&(start, _)| start);
-        Self { ranges }
-    }
-
-    #[inline]
-    fn contains(&self, va: Va) -> bool {
-        let idx = self.ranges.partition_point(|&(start, _)| start <= va);
-        if idx == 0 {
-            return false;
-        }
-        let (start, end) = self.ranges[idx - 1];
-        va >= start && va < end
-    }
 }
 
 // ── Format dispatch ───────────────────────────────────────────────────────────

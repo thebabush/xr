@@ -136,7 +136,7 @@ type AddrPair = (Va, Va);
 struct Stats {
     tp: usize,
     fp: usize,
-    fn_: usize,
+    false_neg: usize,
 }
 
 impl Stats {
@@ -148,10 +148,10 @@ impl Stats {
         }
     }
     fn recall(&self) -> f64 {
-        if self.tp + self.fn_ == 0 {
+        if self.tp + self.false_neg == 0 {
             0.0
         } else {
-            self.tp as f64 / (self.tp + self.fn_) as f64
+            self.tp as f64 / (self.tp + self.false_neg) as f64
         }
     }
     fn f1(&self) -> f64 {
@@ -170,7 +170,7 @@ fn compute_stats(xr: &AHashSet<AddrPair>, ida: &AHashSet<AddrPair>) -> Stats {
     Stats {
         tp,
         fp: xr.len() - tp,
-        fn_: ida.len() - tp,
+        false_neg: ida.len() - tp,
     }
 }
 
@@ -181,7 +181,7 @@ fn print_stats(label: &str, s: &Stats, xr_total: usize, ida_total: usize) {
          prec={:.3}  rec={:.3}  F1={:.3}",
         s.tp,
         s.fp,
-        s.fn_,
+        s.false_neg,
         s.precision(),
         s.recall(),
         s.f1()
