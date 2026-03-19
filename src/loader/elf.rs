@@ -92,7 +92,12 @@ pub(super) fn parse_elf(
     };
 
     // Sections that should NOT be byte-scanned for pointers.
-    const NO_SCAN_SECTIONS: &[&str] = &[".data.rel.ro", ".data.rel.ro.local"];
+    // `.dynsym` byte-scan produces wrong xrefs: the byte scanner uses the
+    // `st_value` field VA (+4 from entry start) as `from`, but IDA records
+    // xrefs from the entry-start VA.  We enumerate `.dynsym` explicitly via
+    // `build_elf_dynsym_pointers` which gets both the `from` and the
+    // dynstr/st_value `to` targets right.
+    const NO_SCAN_SECTIONS: &[&str] = &[".data.rel.ro", ".data.rel.ro.local", ".dynsym"];
 
     struct SectionInfo {
         va: u64,
@@ -321,7 +326,8 @@ pub(super) fn parse_elf(
     }
 
     let got_slots = build_elf_got_slots(elf, pie_base);
-    let reloc_pointers = build_elf_reloc_pointers(elf, bytes, pie_base, &segments);
+    let mut reloc_pointers = build_elf_reloc_pointers(elf, bytes, pie_base, &segments);
+    reloc_pointers.extend(build_elf_dynsym_pointers(elf, pie_base));
 
     Ok(ParseResult {
         arch,
@@ -386,6 +392,88 @@ fn classify_section_mode(
     } else {
         switches
     }
+}
+
+/// Emit the three `data_ptr` xrefs IDA records for each `.dynsym` entry.
+///
+/// IDA parses `.dynsym` as a typed `Elf32_Sym` / `Elf64_Sym` array and records
+/// `dr_O` (offset/pointer) xrefs from the **entry-start VA** — not from a
+/// specific field offset — to three targets per defined symbol:
+///
+/// 1. `.dynstr` section base  — anchor ref that IDA records for every non-null entry
+/// 2. `.dynstr + st_name`     — the symbol-name string VA
+/// 3. `st_value & !1`         — the function/data address (defined symbols only)
+///
+/// Undefined symbols (st_shndx == 0) produce refs 1+2 only.
+///
+/// Why we can't rely on the byte scanner: in PIE ELF, `st_value` is stored
+/// as a pre-rebase VMA (e.g. `0x0004b6d4`); after rebasing to `0x400000+`
+/// the byte scanner rejects it as unmapped.  Explicit enumeration with
+/// `+ pie_base` produces the correct rebased address.
+///
+/// `.dynsym` is listed in `NO_SCAN_SECTIONS` so the byte scanner never runs
+/// on it (it would use `entry + field_offset` as `from`, not `entry_start`).
+fn build_elf_dynsym_pointers(elf: &goblin::elf::Elf, pie_base: u64) -> Vec<RelocPointer> {
+    use goblin::elf::section_header::SHT_DYNSYM;
+
+    // Locate .dynsym section header — present even in stripped binaries.
+    let dynsym_sh = match elf.section_headers.iter().find(|sh| sh.sh_type == SHT_DYNSYM) {
+        Some(sh) => sh,
+        None => return vec![],
+    };
+    let dynsym_va = dynsym_sh.sh_addr;
+
+    // .dynstr is identified by sh_link in the .dynsym section header.
+    let dynstr_va = match elf.section_headers.get(dynsym_sh.sh_link as usize) {
+        Some(sh) => sh.sh_addr,
+        None => return vec![],
+    };
+
+    let entry_size: u64 = if elf.is_64 { 24 } else { 16 };
+
+    let mut pointers = Vec::new();
+    for (i, sym) in elf.dynsyms.iter().enumerate() {
+        // Skip the mandatory null entry (index 0, all fields zero).
+        if sym.st_name == 0 && sym.st_value == 0 && sym.st_shndx == 0 {
+            continue;
+        }
+
+        let from = Va::new(dynsym_va + i as u64 * entry_size + pie_base);
+
+        // 1. Ref to .dynstr base — IDA records this for every non-null entry.
+        pointers.push(RelocPointer {
+            from,
+            to: Va::new(dynstr_va + pie_base),
+        });
+
+        // 2. Ref to the symbol-name string (skip when st_name=0 — same as base).
+        if sym.st_name != 0 {
+            pointers.push(RelocPointer {
+                from,
+                to: Va::new(dynstr_va + sym.st_name as u64 + pie_base),
+            });
+        }
+
+        // 3. Ref to the symbol's value — only for DATA symbols (non-exec section).
+        // IDA records dr_O to st_value only when the symbol lives in a non-exec
+        // section (.data, .data.rel.ro, .bss, etc.).  For function symbols in
+        // .text/.plt/.init (SHF_EXECINSTR), IDA does not emit a data_ptr xref.
+        // SHN_UNDEF=0 and SHN_ABS/COMMON/XINDEX (0xff00+) are excluded.
+        if sym.st_shndx != 0 && sym.st_shndx < 0xff00 && sym.st_value != 0 {
+            let is_exec_section = elf
+                .section_headers
+                .get(sym.st_shndx)
+                .is_some_and(|sh| sh.sh_flags & 0x4 != 0); // SHF_EXECINSTR = 0x4
+            if !is_exec_section {
+                // Clear Thumb interworking bit (ARM32 LSB=1 for Thumb entry points).
+                pointers.push(RelocPointer {
+                    from,
+                    to: Va::new((sym.st_value & !1) + pie_base),
+                });
+            }
+        }
+    }
+    pointers
 }
 
 fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
