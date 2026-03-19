@@ -13,12 +13,13 @@
   produce no extern-VA xrefs. ARM32 and x86-64/AArch64 are already handled.
   (`src/loader/elf.rs`)
 
-- [ ] ARM32 ELF armhf binaries miss ~13k `data_ptr` FNs per binary because
-  IDA records a `data_ptr` xref from each `.dynsym` slot to the symbol's
-  `st_value`. These are ELF structure references, not code xrefs, but they
-  show up in ground truth. Emitting them is straightforward: iterate
-  `.dynsym` entries, use the slot VA as `from` and `st_value & !1` as `to`.
-  (`src/loader/elf.rs`)
+- [ ] ARM32 armhf binaries have ~26k `data_ptr` FNs per binary (e.g.
+  libcrypto-1.1.1n: 26075 FN, rec=0.573). The `.dynsym` hypothesis was
+  investigated and disproved: emitting `(st_value_field_va → st_value+pie_base)`
+  for every `.dynsym` entry produced ~4400 pure FPs with zero TP gain — IDA
+  does not record these. Root cause of the FNs is still unknown; likely
+  complex LDR+ADD PC chains or jump-table entries IDA resolves via CFG that
+  xr's linear scanner misses.
 
 - [ ] ARM32 classifier H=2 latency leaves a 4-byte blind spot at each
   ISA transition — the mode switch is recorded at word N+1 rather than N.
