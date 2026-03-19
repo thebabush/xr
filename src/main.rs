@@ -154,29 +154,6 @@ impl KindFilter {
     }
 }
 
-/// Extract a Rust string from a (ptr, len) pair.
-///
-/// `from` is the VA of the pointer (the `to` field points into the string blob).
-/// The length is read from `from + ptr_size`.
-fn extract_rust_string(
-    binary: &LoadedBinary,
-    blobs: &StringBlobIndex,
-    from: Va,
-    to: Va,
-) -> Option<String> {
-    let blob = blobs.lookup(to)?;
-
-    let ptr_size = binary.arch.pointer_size()?;
-
-    let len = xr::rust::read_usize_at(binary, from + ptr_size as u64, ptr_size)?;
-
-    // Sanity check
-    if len == 0 || len > 1_000_000 {
-        return None;
-    }
-
-    blob.extract(to, len).map(|s| s.to_string())
-}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -248,6 +225,12 @@ fn main() -> Result<()> {
 
     // Context is enabled whenever -A or -B is non-zero (like grep).
     let want_context = cli.before > 0 || cli.after > 0;
+    if want_context && binary.arch == xr::Arch::Arm32 {
+        eprintln!(
+            "warning: disassembly context (-A/-B) is not yet implemented for \
+             ARM32/Thumb; context lines will be omitted"
+        );
+    }
 
     let kind_filter = cli.kind;
     let limit = cli.limit;
@@ -329,7 +312,7 @@ fn main() -> Result<()> {
                     if x.kind.scored_kind() == XrefKind::DataPointer
                         && x.confidence == Confidence::ByteScan
                     {
-                        extract_rust_string(&binary, blobs, x.from, x.to)
+                        blobs.extract_rust_string(&binary, x.from, x.to)
                             .map(|s| truncate_middle(&s, cli.rust_string_max))
                     } else {
                         None

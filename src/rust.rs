@@ -112,6 +112,27 @@ impl StringBlobIndex {
     pub fn iter(&self) -> impl Iterator<Item = &StringBlob> {
         self.blobs.iter()
     }
+
+    /// Extract a Rust `&str` string from a `(ptr, len)` pair in the binary.
+    ///
+    /// `from` is the VA of the pointer field (the `to` field of the xref points
+    /// into the string blob).  The adjacent length is read from `from + ptr_size`.
+    ///
+    /// Only [`Confidence::ByteScan`] `DataPointer` xrefs should be passed here —
+    /// instruction-derived xrefs have `from` at an instruction VA where
+    /// `from + ptr_size` reads code bytes, not a length field.
+    ///
+    /// Returns `None` if the target VA is not in a known blob, the length is
+    /// implausible (0 or >1 MB), or the byte range is not valid UTF-8.
+    pub fn extract_rust_string(&self, binary: &LoadedBinary, from: Va, to: Va) -> Option<String> {
+        let blob = self.lookup(to)?;
+        let ptr_size = binary.arch.pointer_size()?;
+        let len = read_usize_at(binary, from + ptr_size as u64, ptr_size)?;
+        if len == 0 || len > 1_000_000 {
+            return None;
+        }
+        blob.extract(to, len).map(|s| s.to_string())
+    }
 }
 
 /// Scan a segment for contiguous UTF-8 spans >= `min_len` bytes.

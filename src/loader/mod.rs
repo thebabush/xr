@@ -338,7 +338,9 @@ impl LoadedBinary {
         // Detect dyld shared cache by magic prefix before handing off to goblin.
         if mmap.starts_with(b"dyld_v1 ") {
             let result = dyld::parse_dyld_cache(path)?;
-            let p = result.parsed;
+            let mut p = result.parsed;
+            // Sort segments by VA so segment_at can use binary search.
+            p.segments.sort_unstable_by_key(|s| s.va);
             return Ok(LoadedBinary {
                 arch: p.arch,
                 segments: p.segments,
@@ -356,7 +358,9 @@ impl LoadedBinary {
         let bytes: &[u8] = &mmap[..];
 
         let mut bss_bufs: Vec<Box<[u8]>> = Vec::new();
-        let p = parse_binary(bytes, &mut bss_bufs, base)?;
+        let mut p = parse_binary(bytes, &mut bss_bufs, base)?;
+        // Sort segments by VA so segment_at can use binary search.
+        p.segments.sort_unstable_by_key(|s| s.va);
 
         Ok(LoadedBinary {
             arch: p.arch,
@@ -374,7 +378,9 @@ impl LoadedBinary {
 
     /// Construct a LoadedBinary directly from segments, for use in tests.
     #[cfg(test)]
-    pub fn from_segments(arch: Arch, segments: Vec<Segment>) -> Self {
+    pub fn from_segments(arch: Arch, mut segments: Vec<Segment>) -> Self {
+        // Sort by VA to match the invariant established by load_with_base.
+        segments.sort_unstable_by_key(|s| s.va);
         // An anonymous 1-byte mapping satisfies the `_mmap: Mmap` field without
         // creating a temporary file on disk.  `MmapMut::map_anon` + `make_read_only`
         // returns the same `Mmap` type that real loads produce.
@@ -397,8 +403,16 @@ impl LoadedBinary {
     }
 
     /// Find the segment containing a given virtual address.
+    ///
+    /// Uses binary search — segments are sorted by VA at construction
+    /// (`load_with_base` / `from_segments`), so this is O(log n).
     pub fn segment_at(&self, va: Va) -> Option<&Segment> {
-        self.segments.iter().find(|s| s.contains(va))
+        let idx = self.segments.partition_point(|s| s.va <= va);
+        if idx == 0 {
+            return None;
+        }
+        let seg = &self.segments[idx - 1];
+        if seg.contains(va) { Some(seg) } else { None }
     }
 
     /// True if the given VA is in any mapped segment.

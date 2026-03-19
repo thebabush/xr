@@ -42,7 +42,10 @@ impl<'a> ScanRegion<'a> {
             seg.va,
         );
         let offset = (start_va - seg.va) as usize;
-        let len = ((end_va - start_va) as usize).min(seg.data().len() - offset);
+        // saturating_sub guards against the (debug-assert-caught) case where
+        // start_va wraps past the segment end in release builds — avoids a
+        // subtraction-overflow panic in favour of a zero-length region.
+        let len = ((end_va - start_va) as usize).min(seg.data().len().saturating_sub(offset));
         Self {
             data: &seg.data()[offset..offset + len],
             base_va: start_va,

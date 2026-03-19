@@ -472,22 +472,20 @@ impl<'a> XrefPass<'a> {
             output.join().expect("output thread panicked")
         });
 
-        // Bytes scanned: code segment bytes (zero for ByteScan — no instruction
-        // decoding runs) plus scannable data segment bytes.  Note: from_range
-        // filtering may mean only a portion of each segment was scanned; this
-        // reports the full segment sizes as an upper bound in that case.
+        // Bytes scanned: the portion of each segment that actually fell within
+        // `from_range` (or the full segment when no range was active).
         let code_bytes: u64 = if depth == Depth::ByteScan {
             0
         } else {
             self.binary
                 .code_segments()
-                .map(|s| s.data().len() as u64)
+                .map(|s| seg_bytes_in_range(s, from_range))
                 .sum()
         };
         let data_bytes: u64 = self
             .binary
             .scannable_data_segments()
-            .map(|s| s.data().len() as u64)
+            .map(|s| seg_bytes_in_range(s, from_range))
             .sum();
         let bytes_scanned = code_bytes + data_bytes;
         // `segments_scanned` was computed above, before the shards were consumed.
@@ -541,6 +539,22 @@ struct ScanCtx<'a> {
     pie_base: u64,
 }
 
+/// Bytes of `seg` that fall within `from_range`, or the full segment length
+/// when no range is active.  Used to compute accurate `bytes_scanned` totals
+/// when `--start`/`--end` restrict the scan to a sub-range of the binary.
+#[inline]
+fn seg_bytes_in_range(seg: &Segment, from_range: Option<VaRange>) -> u64 {
+    let seg_end = seg.va + seg.data().len() as u64;
+    match from_range {
+        None => seg.data().len() as u64,
+        Some(r) => {
+            let start = seg.va.max(r.start);
+            let end = Va::new(seg_end.raw().min(r.end.raw()));
+            if start >= end { 0 } else { end - start }
+        }
+    }
+}
+
 fn scan_shard(
     seg: &Segment,
     start_va: Va,
@@ -572,10 +586,13 @@ fn scan_shard(
             let region = ScanRegion::new(seg, start_va, end_va);
             x86_64::scan_with_prop(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
         }
-        (Arch::X86, _) => vec![],
-        (Arch::Unknown, _) => vec![],
-        // ByteScan never generates code shards.
-        (_, Depth::ByteScan) => vec![],
+        // ByteScan never generates code shards — the shard vec is empty for
+        // this depth, so these arms are unreachable in production.
+        // Listing them explicitly (rather than using `_`) ensures the compiler
+        // flags unhandled combinations when new Depth variants are added.
+        (Arch::Arm64 | Arch::Arm32 | Arch::X86_64, Depth::ByteScan) => vec![],
+        // x86 (32-bit) and Unknown: no instruction scanner implemented.
+        (Arch::X86 | Arch::Unknown, Depth::Linear | Depth::Paired | Depth::ByteScan) => vec![],
     }
 }
 

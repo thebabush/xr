@@ -243,7 +243,12 @@ impl Printer for CsvPrinter {
         // Quote the string field to handle commas, quotes, newlines in content.
         let string_field = match &r.rust_string {
             Some(s) => {
-                let escaped = s.replace('"', "\"\"");
+                // Escape embedded newlines and carriage returns so a single xref
+                // always occupies exactly one CSV row.  Double-quotes are doubled
+                // per RFC 4180.
+                let escaped = s.replace('"', "\"\"")
+                               .replace('\n', "\\n")
+                               .replace('\r', "\\r");
                 format!("\"{}\"", escaped)
             }
             None => String::new(),
