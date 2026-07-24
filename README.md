@@ -1,28 +1,35 @@
-# xr - fast binary cross-reference extractor
+# xr — fast binary cross-reference extractor
 
-`xr` is a standalone Rust CLI tool for ultra-fast, parallel extraction of
-cross-references from stripped binaries (ELF, Mach-O, PE).  It emits
-`(from_va, to_va, kind)` tuples at orders-of-magnitude faster speed than
-traditional disassemblers.
+`xr` is a standalone Rust CLI that extracts cross-references — calls, jumps, and
+data references — from stripped binaries (ELF, Mach-O, PE, and the Apple dyld
+shared cache) in seconds. It emits `(from_va, to_va, kind)` tuples orders of
+magnitude faster than loading the binary into a full disassembler like IDA,
+Ghidra, or Binary Ninja, making it a fast building block for reverse-engineering
+pipelines, binary diffing, and large-scale program analysis.
+
+## Install
+
+```sh
+cargo install xrefs        # crate is `xrefs`, binary is `xr`
+```
+
+Or build from source with `cargo build --release` (binary at `target/release/xr`).
 
 ## Quick Start
 
 ```sh
-cargo build --release
-
 # Analyse a binary at the recommended depth
-./target/release/xr /path/to/binary --depth paired
+xr /path/to/binary --depth paired
 
 # Output as JSONL or CSV
-./target/release/xr /path/to/binary --depth paired --format jsonl
-./target/release/xr /path/to/binary --depth paired --format csv
+xr /path/to/binary --depth paired --format jsonl
+xr /path/to/binary --depth paired --format csv
 
 # Filter to a specific xref kind
-./target/release/xr /path/to/binary --depth paired --kind call
+xr /path/to/binary --depth paired --kind call
 
 # Show disasm context around each xref site (like grep -A/-B)
-./target/release/xr /path/to/binary --depth paired -A 3 -B 2
-
+xr /path/to/binary --depth paired -A 3 -B 2
 ```
 
 ## Performance
@@ -121,12 +128,11 @@ OPTIONS:
 
 ## Benchmarking
 
-```sh
-# Build the benchmark binary
-cargo build --release --bin benchmark
+The `benchmark` helper ships as an example (it is not installed by `cargo install`):
 
+```sh
 # Run against a ground-truth file
-./target/release/benchmark \
+cargo run --release --example benchmark -- \
     --binary /path/to/binary \
     --ground-truth /path/to/binary.xrefs.json \
     --depth paired
@@ -138,3 +144,8 @@ This project includes a [Claude Code skill](https://docs.anthropic.com/en/docs/c
 in `.claude/skills/xrefs/` that teaches Claude how to use `xr` for binary
 reverse-engineering workflows: finding callers/callees, data references,
 pointer hunting, and more.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.

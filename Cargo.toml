@@ -1,17 +1,24 @@
 [package]
-name = "xr"
+name = "xrefs"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"
 default-run = "xr"
+description = "Ultra-fast parallel cross-reference extractor for stripped binaries (ELF, Mach-O, PE, dyld cache)"
+authors = ["Paolo Montesel"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thebabush/xr"
+homepage = "https://github.com/thebabush/xr"
+readme = "README.md"
+keywords = ["reverse-engineering", "xref", "disassembler", "binary", "macho"]
+categories = ["command-line-utilities", "development-tools"]
+# Keep the published crate lean: dev-only scripts, internal notes, profiling
+# artifacts, and the Claude Code skill live in the repo but not in the tarball.
+exclude = ["scripts/", "docs/TODO.md", "flamegraph.svg", ".claude/"]
 
 [[bin]]
 name = "xr"
 path = "src/main.rs"
-
-[[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
 
 [lib]
 name = "xr"

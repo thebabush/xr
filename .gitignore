@@ -10,3 +10,13 @@ detours/
 .DS_Store
 call
 davinci/
+
+# Profiling artifacts
+flamegraph.svg
+perf.data*
+
+# Claude Code — keep the project skill, ignore personal/local files
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/xrefs/
