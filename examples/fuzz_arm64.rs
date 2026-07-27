@@ -192,7 +192,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
             if !matches!(ours, Arm64Insn::Bl(_)) {
                 return Some(format!("expected Bl, got {:?}", ours));
             }
-            let bad_target = bad64_imm(ops.first())? as u64;
+            let bad_target = bad64_imm(ops.first())?;
             let our_target = ours.imm26_target(PC);
             if bad_target != our_target {
                 return Some(format!(
@@ -207,7 +207,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
             if !matches!(ours, Arm64Insn::B(_)) {
                 return Some(format!("expected B, got {:?}", ours));
             }
-            let bad_target = bad64_imm(ops.first())? as u64;
+            let bad_target = bad64_imm(ops.first())?;
             let our_target = ours.imm26_target(PC);
             if bad_target != our_target {
                 return Some(format!(
@@ -237,7 +237,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
             if !matches!(ours, Arm64Insn::BCond(_)) {
                 return Some(format!("expected BCond, got {:?}", ours));
             }
-            let bad_target = bad64_imm(ops.first())? as u64;
+            let bad_target = bad64_imm(ops.first())?;
             let our_target = ours.imm19_target(PC);
             if bad_target != our_target {
                 return Some(format!(
@@ -253,7 +253,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
                 return Some(format!("expected Cbz, got {:?}", ours));
             }
             // bad64: op[0]=Rt, op[1]=label
-            let bad_target = bad64_imm(ops.get(1))? as u64;
+            let bad_target = bad64_imm(ops.get(1))?;
             let our_target = ours.cbz_target(PC);
             if bad_target != our_target {
                 return Some(format!(
@@ -272,7 +272,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
             if !matches!(ours, Arm64Insn::Cbnz(_)) {
                 return Some(format!("expected Cbnz, got {:?}", ours));
             }
-            let bad_target = bad64_imm(ops.get(1))? as u64;
+            let bad_target = bad64_imm(ops.get(1))?;
             let our_target = ours.cbz_target(PC);
             if bad_target != our_target {
                 return Some(format!(
@@ -293,7 +293,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
                 return Some(format!("expected Tbz, got {:?}", ours));
             }
             // bad64: op[0]=Rt, op[1]=bit_imm, op[2]=label
-            let bad_target = bad64_imm(ops.get(2))? as u64;
+            let bad_target = bad64_imm(ops.get(2))?;
             let our_target = ours.imm14_target(PC);
             if bad_target != our_target {
                 return Some(format!(
@@ -306,7 +306,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
             if !matches!(ours, Arm64Insn::Tbnz(_)) {
                 return Some(format!("expected Tbnz, got {:?}", ours));
             }
-            let bad_target = bad64_imm(ops.get(2))? as u64;
+            let bad_target = bad64_imm(ops.get(2))?;
             let our_target = ours.imm14_target(PC);
             if bad_target != our_target {
                 return Some(format!(
@@ -322,7 +322,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
                 return Some(format!("expected Adrp, got {:?}", ours));
             }
             // bad64: op[0]=Rd, op[1]=page_imm (already resolved)
-            let bad_page = bad64_imm(ops.get(1))? as u64;
+            let bad_page = bad64_imm(ops.get(1))?;
             let our_page = ours.adrp_page(PC);
             if bad_page != our_page {
                 return Some(format!(
@@ -342,7 +342,7 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
             // bad64 is permissive about fixed bits — it may decode non-standard
             // words as ADR. We only assert fields when we positively classified it.
             if matches!(ours, Arm64Insn::Adr(_)) {
-                let bad_target = bad64_imm(ops.get(1))? as u64;
+                let bad_target = bad64_imm(ops.get(1))?;
                 let our_target = ours.adr_target(PC);
                 if bad_target != our_target {
                     return Some(format!(

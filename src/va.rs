@@ -191,6 +191,20 @@ impl std::fmt::Display for VaRange {
     }
 }
 
+// ── Serde ─────────────────────────────────────────────────────────────────────
+
+impl serde::Serialize for Va {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Va {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        u64::deserialize(deserializer).map(Va)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -237,19 +251,5 @@ mod tests {
             let expected = format!("0x{v:016x}");
             assert_eq!(hex_padded(v), expected, "mismatch for {v:#x}");
         }
-    }
-}
-
-// ── Serde ─────────────────────────────────────────────────────────────────────
-
-impl serde::Serialize for Va {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Va {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        u64::deserialize(deserializer).map(Va)
     }
 }

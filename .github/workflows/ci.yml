@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: build · test · clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # bad64 -> bad64-sys runs bindgen, which needs libclang.
+      # macOS runners provide it via the Xcode toolchain; Linux needs the package.
+      - name: Install libclang (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - name: Install Rust (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --all-targets --verbose
+
+      - name: Test
+        run: cargo test --workspace --verbose
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

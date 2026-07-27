@@ -122,8 +122,8 @@ fn scan_core(
         // Propagation-only: resolve indirect call/jmp from tracked register state.
         if prop == PropMode::On {
             match insn.code() {
-                Code::Call_rm64 | Code::Jmp_rm64 => {
-                    if insn.op0_kind() == OpKind::Register {
+                Code::Call_rm64 | Code::Jmp_rm64
+                    if insn.op0_kind() == OpKind::Register => {
                         let reg = insn.op0_register();
                         if let Some(ri) = gpr_index(reg) {
                             if let Some(known) = reg_vals[ri] {
@@ -147,7 +147,6 @@ fn scan_core(
                             }
                         }
                     }
-                }
                 _ => {}
             }
         }
@@ -496,8 +495,8 @@ fn update_cmp_state(insn: &Instruction, cmp_bound: &mut [Option<u32>; 16]) {
                 }
             }
         }
-        Code::Cmp_rm64_imm8 | Code::Cmp_rm32_imm8 => {
-            if insn.op0_kind() == OpKind::Register {
+        Code::Cmp_rm64_imm8 | Code::Cmp_rm32_imm8
+            if insn.op0_kind() == OpKind::Register => {
                 if let Some(ri) = gpr_index(insn.op0_register()) {
                     let imm = insn.immediate8() as u64;
                     if imm < MAX_JUMP_TABLE_ENTRIES as u64 {
@@ -508,7 +507,6 @@ fn update_cmp_state(insn: &Instruction, cmp_bound: &mut [Option<u32>; 16]) {
                     return;
                 }
             }
-        }
         _ => {}
     }
 
@@ -624,13 +622,10 @@ fn update_prop_state(insn: &Instruction, vals: &mut [Option<u64>; 16]) {
             vals[dst_idx] = None;
         }
         // LEA r64, [rip+disp] — we know the value since RIP-relative is resolved
-        Code::Lea_r64_m => {
-            if insn.memory_base() == Register::RIP {
+        Code::Lea_r64_m
+            if insn.memory_base() == Register::RIP => {
                 vals[dst_idx] = Some(insn.memory_displacement64());
-            } else {
-                vals[dst_idx] = None;
             }
-        }
         // Any other write — invalidate
         _ => {
             vals[dst_idx] = None;
